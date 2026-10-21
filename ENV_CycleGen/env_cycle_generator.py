@@ -113,6 +113,9 @@ class Parameters:
     load_axis_min_percent: float = 0.0
     load_axis_max_percent: float = 100.0
     load_axis_step_percent: float = 10.0
+    voltage_axis_min_v: float = 0.0
+    voltage_axis_max_v: float = 60.0
+    voltage_axis_step_v: float = 5.0
     temperature_axis_min_c: float = -50.0
     temperature_axis_max_c: float = 100.0
     temperature_axis_step_c: float = 10.0
@@ -138,7 +141,7 @@ class Parameters:
         if self.sample_seconds <= 0:
             raise ValueError('Time step must be greater than zero.')
         if self.load_open_seconds <= 0 or self.load_hold_seconds < 0 or self.load_pause_seconds < 0:
-            raise ValueError('Load opening time must be > 0; hold and pause times must be >= 0.')
+            raise ValueError('Actuator opening time must be > 0; hold and pause times must be >= 0.')
         if self.tracker_step_seconds < 0:
             raise ValueError('Tracker Step must be zero (continuous) or greater than zero.')
         if isinstance(self.cycles, bool) or not isinstance(self.cycles, int) or not 1 <= self.cycles <= 10000:
@@ -517,7 +520,15 @@ def open_description(test_id):
 
 SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(1).docx'
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config.json')
-COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step_seconds x_axis_end_seconds load_open_seconds load_hold_seconds load_pause_seconds'.split()
+COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds'.split()
+ACTUATOR_KEYS = 'load_open_seconds load_hold_seconds load_pause_seconds load_close_seconds load_max_percent'.split()
+ACTUATOR_VISIBLE_KEYS = 'load_open_seconds load_hold_seconds load_pause_seconds'.split()
+CHART_KEYS = ('tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step_seconds x_axis_end_seconds '
+              'temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c '
+              'humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh '
+              'load_axis_min_percent load_axis_max_percent load_axis_step_percent '
+              'voltage_axis_min_v voltage_axis_max_v voltage_axis_step_v').split()
+GLOBAL_KEYS = set(ACTUATOR_KEYS + CHART_KEYS)
 TEST_KEYS = {
  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c nominal_voltage_v minimum_voltage_v maximum_voltage_v ua_voltage_v ub_voltage_v precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
@@ -551,8 +562,8 @@ PARAMETER_LABELS = {
  'hot_humidity_rh':'Hot Dwell RH [%]', 'rising_humidity_rh':'Temperature Rise RH [%]', 'cooling_humidity_rh':'Temperature Fall RH [%]',
  'climate_check_minutes':'Function Check Duration [min]', 'frost_cycles':'Initial Frost Cycles',
  'cold_check_duration_minutes':'Cold Function Check Duration [min]',
- 'load_open_seconds':'Load Opening Time [s]', 'load_hold_seconds':'Load Hold Time [s]',
- 'load_pause_seconds':'Load Pause Time [s]',
+ 'load_open_seconds':'Actuator Opening Time [s]', 'load_hold_seconds':'Actuator Hold Time [s]',
+ 'load_pause_seconds':'Actuator Pause Time [s]',
 }
 
 def parameter_label(key):
@@ -560,19 +571,49 @@ def parameter_label(key):
 
 
 def default_configuration():
-    config = {'schema_version':2, 'source_document':SOURCE_DOCUMENT, 'tests':{}}
+    defaults = asdict(Parameters())
+    config = {'schema_version':3, 'source_document':SOURCE_DOCUMENT,
+              'global': {'actuator': {key: defaults[key] for key in ACTUATOR_KEYS},
+                         'chart': {key: defaults[key] for key in CHART_KEYS}}, 'tests':{}}
     for tid in GENERATORS:
         values = asdict(default_parameters(tid))
         keys = list(dict.fromkeys(TEST_KEYS[tid].split()+COMMON_KEYS))
         config['tests'][tid] = {'name':TEST_NAMES[tid],
             'visible':{key:values[key] for key in keys if key not in HIDDEN_KEYS},
-            'unvisible':{key:values[key] for key in keys if key in HIDDEN_KEYS}}
+            'unvisible':{key:values[key] for key in keys if key in HIDDEN_KEYS},
+            'chart_overrides': {}}
     return config
 
 
+def migrate_schema2(config):
+    """Convert schema 2 in memory, retaining every differing global value as an override."""
+    import copy
+    if config.get('schema_version') != 2:
+        return config
+    migrated = copy.deepcopy(config)
+    base = default_configuration()
+    migrated['schema_version'] = 3
+    migrated['global'] = copy.deepcopy(base['global'])
+    global_values = {**migrated['global']['actuator'], **migrated['global']['chart']}
+    for tid, entry in migrated.get('tests', {}).items():
+        overrides = {}
+        for section in ('visible', 'unvisible'):
+            values = entry.get(section, {})
+            for key in list(values):
+                if key in GLOBAL_KEYS:
+                    value = values.pop(key)
+                    if value != global_values[key]:
+                        overrides[key] = value
+        entry['chart_overrides'] = overrides
+    return migrated
+
+
 def parameters_from_configuration(config, test_id):
-    if config.get('schema_version') != 2 or not isinstance(config.get('tests'),dict):
-        raise ValueError('Expected a schema_version 2 overall configuration with tests sections.')
+    if config.get('schema_version') != 3 or not isinstance(config.get('tests'),dict):
+        raise ValueError('Expected a schema_version 3 overall configuration with global and tests sections.')
+    global_config = config.get('global')
+    if not isinstance(global_config, dict) or not isinstance(global_config.get('actuator'), dict) or not isinstance(global_config.get('chart'), dict):
+        raise ValueError('Schema 3 requires global.actuator and global.chart objects.')
     if test_id not in config['tests']:
         raise ValueError('Configuration is missing '+test_id)
     entry = config['tests'][test_id]
@@ -581,8 +622,13 @@ def parameters_from_configuration(config, test_id):
     overlap = set(entry['visible']) & set(entry['unvisible'])
     if overlap:
         raise ValueError(test_id+': parameter appears in both sections: '+', '.join(sorted(overlap)))
+    overrides = entry.get('chart_overrides', {})
+    if not isinstance(overrides, dict) or any(key not in GLOBAL_KEYS for key in overrides):
+        raise ValueError(test_id+': chart_overrides contains an unsupported parameter.')
     values = asdict(default_parameters(test_id))
-    for key, value in {**entry['unvisible'],**entry['visible']}.items():
+    combined = {**global_config['actuator'], **global_config['chart'], **overrides,
+                **entry['unvisible'], **entry['visible']}
+    for key, value in combined.items():
         if key not in values or key == 'test_id':
             raise ValueError(test_id+': unknown or removed parameter '+key)
         default = values[key]
@@ -606,13 +652,22 @@ def parameters_from_configuration(config, test_id):
 
 
 def load_configuration(path=DEFAULT_CONFIG_PATH):
-    config = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    path = Path(path)
+    config = json.loads(path.read_text(encoding='utf-8-sig'))
+    if config.get('schema_version') == 2:
+        backup = path.with_name(path.stem+'.schema2.backup'+path.suffix)
+        if not backup.exists():
+            backup.write_bytes(path.read_bytes())
+        config = migrate_schema2(config)
+        temporary = path.with_name(path.name+'.schema3.tmp')
+        temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
+        temporary.replace(path)
     for tid in GENERATORS:
         parameters_from_configuration(config,tid)
     return config
 
 
-def save_current_test(path, parameters, entry_template=None):
+def save_current_test(path, parameters, entry_template=None, global_values=None):
     """Read current disk contents; replace only the selected test's values.
 
     Other test sections, visibility membership, and unknown metadata are retained.
@@ -627,6 +682,11 @@ def save_current_test(path, parameters, entry_template=None):
     for section in ('visible','unvisible'):
         for key in entry[section]:
             entry[section][key] = values[key]
+    global_values = values if global_values is None else global_values
+    for section in ('actuator','chart'):
+        for key in config['global'][section]:
+            config['global'][section][key] = global_values[key]
+    config['global']['actuator']['load_close_seconds'] = config['global']['actuator']['load_open_seconds']
     config['tests'][tid] = entry
     for key in GENERATORS:
         parameters_from_configuration(config,key)
@@ -892,7 +952,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             messagebox.showerror('Show Description', str(exc))
     ttk.Button(selector_row, text='Show Description', command=show_description).pack(side='left', padx=10)
     load_enabled = tk.BooleanVar(value=False)
-    ttk.Checkbutton(selector_row, text='Load', variable=load_enabled, command=lambda: plot()).pack(side='left', padx=(0, 10))
+    ttk.Checkbutton(selector_row, text='Actuator Pos. [%]', variable=load_enabled, command=lambda: plot()).pack(side='left', padx=(0, 10))
     body = ttk.Frame(outer)
     body.pack(fill='both', expand=True)
     form_host = ttk.LabelFrame(body, text='Test Parameters')
@@ -980,7 +1040,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     ttk.Label(view, textvariable=source_note, wraplength=650, justify='left').pack(anchor='w')
     state = {'recipes': {tid:parameters_from_configuration(configuration,tid) for tid in GENERATORS},
              'configuration':configuration, 'config_path':Path(config_path),
-             'tracker_step':60.0, 'axis_unit':'Seconds'}
+             'tracker_step':60.0, 'axis_unit':'Seconds',
+             'global_values': {**configuration['global']['actuator'], **configuration['global']['chart']}}
     markers = MeasurementMarkers()
     values = {}
     def read_axis():
@@ -1035,16 +1096,21 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             else:
                 args[key] = float(raw)
         args['load_close_seconds'] = args['load_open_seconds']
-        visible = state['configuration']['tests'][selected.get()]['visible']
-        if 'tracker_step_seconds' in visible:
-            args['tracker_step_seconds'] = float(tracker_step.get().strip().replace(',', '.'))
+        args['tracker_step_seconds'] = float(tracker_step.get().strip().replace(',', '.'))
         axis_start,axis_step,axis_end = read_axis()
-        if 'x_axis_start_seconds' in visible: args['x_axis_start_seconds'] = axis_start
-        if 'x_axis_step_seconds' in visible: args['x_axis_step_seconds'] = axis_step
-        if 'x_axis_end_seconds' in visible: args['x_axis_end_seconds'] = axis_end
-        if 'x_axis_unit' in visible: args['x_axis_unit'] = x_unit.get()
+        args['x_axis_start_seconds'] = axis_start
+        args['x_axis_step_seconds'] = axis_step
+        args['x_axis_end_seconds'] = axis_end
+        args['x_axis_unit'] = x_unit.get()
+        editable_global = set(ACTUATOR_VISIBLE_KEYS) | SPECIAL_CONTROLS
+        for key in GLOBAL_KEYS - editable_global:
+            args[key] = state['global_values'][key]
+        global_values = {key: args[key] for key in GLOBAL_KEYS}
+        global_values['load_close_seconds'] = global_values['load_open_seconds']
+        args.update(state['configuration']['tests'][selected.get()].get('chart_overrides', {}))
         p = Parameters(**args)
         p.validate()
+        state['global_values'].update(global_values)
         return p
 
     def hide_tracker(event=None):
@@ -1080,7 +1146,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         tracker_labels[2].configure(text=f'Relative Humidity: {humidity}')
         tracker_labels[3].configure(text=f'Mode: {s.operation_mode}{voltage}')
         if load_enabled.get():
-            tracker_labels[4].configure(text=f'Load: {s.load_percent:.2f} %')
+            tracker_labels[4].configure(text=f'Actuator Pos.: {s.load_percent:.2f} %')
 
     def apply_tracker_step(event=None):
         try:
@@ -1091,10 +1157,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             step_feedback.set('Enter a finite Tracker Step ≥ 0 s; 0 = continuous. Previous setting remains active.')
             return False
         state['tracker_step'] = step
-        if 'tracker_step_seconds' in state['configuration']['tests'][selected.get()]['visible']:
-            step_feedback.set(f'Active Tracker Step: {step:g} s. 0 = continuous. Endpoints remain selectable.')
-        else:
-            step_feedback.set('Tracker uses the hidden configuration value.')
+        step_feedback.set(f'Active Tracker Step: {step:g} s. 0 = continuous. Endpoints remain selectable.')
         if 'cursor_fraction' in state:
             draw_tracker(state['cursor_fraction'])
         return True
@@ -1215,7 +1278,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if any(ph.voltage_v is not None for ph in timeline.phases):
             charts.append(('Voltage [V]', '#8957b0'))
         if load_enabled.get():
-            charts.append(('Load [%]', '#d28a18'))
+            charts.append(('Actuator Pos. [%]', '#d28a18'))
         band = (bottom-top)/len(charts)
         mappings = []
         for k, (label, color) in enumerate(charts):
@@ -1232,7 +1295,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                     return categories.index(ph.mode)
                 if k == 1:
                     return ph.humidity_rh
-                if label == 'Load [%]':
+                if label == 'Actuator Pos. [%]':
                     return load_percent_at(timeline.phases, timeline.starts, t, timeline_parameters, load_schedule)
                 if k == 3:
                     return ph.voltage_v
@@ -1244,16 +1307,18 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 nums = list(range(len(categories)))
             elif k == 1:
                 nums = [ph.humidity_rh for ph in timeline.phases if ph.humidity_rh is not None]
-            elif label == 'Load [%]':
+            elif label == 'Actuator Pos. [%]':
                 nums = [timeline_parameters.load_axis_min_percent, timeline_parameters.load_axis_max_percent]
-            elif k == 3:
+            elif label == 'Voltage [V]':
                 nums = [ph.voltage_v for ph in timeline.phases if ph.voltage_v is not None]
             if k == 0:
                 lo, hi, tick_step = timeline_parameters.temperature_axis_min_c, timeline_parameters.temperature_axis_max_c, timeline_parameters.temperature_axis_step_c
             elif k == 1:
                 lo, hi, tick_step = timeline_parameters.humidity_axis_min_rh, timeline_parameters.humidity_axis_max_rh, timeline_parameters.humidity_axis_step_rh
-            elif label == 'Load [%]':
+            elif label == 'Actuator Pos. [%]':
                 lo, hi, tick_step = timeline_parameters.load_axis_min_percent, timeline_parameters.load_axis_max_percent, timeline_parameters.load_axis_step_percent
+            elif label == 'Voltage [V]':
+                lo, hi, tick_step = timeline_parameters.voltage_axis_min_v, timeline_parameters.voltage_axis_max_v, timeline_parameters.voltage_axis_step_v
             else:
                 lo, hi = (min(nums), max(nums)) if nums else (0, 100)
                 pad = 0.5 if categories else max((hi-lo)*0.08, 2)
@@ -1267,7 +1332,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             undefined_spans = []
             for a, b, ph, origin in segments:
                 points = [a, b]
-                if label == 'Load [%]':
+                if label == 'Actuator Pos. [%]':
                     active_start = load_schedule[0][min(bisect.bisect_right(timeline.starts, origin)-1,
                                                        len(timeline.phases)-1)]
                     if active_start is not None:
@@ -1331,10 +1396,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             markers.clear()
         state.update(p=p, phases=phases, samples=samples, timeline=Timeline(phases, p),
                      tracker_step=p.tracker_step_seconds)
-        if 'tracker_step_seconds' in state['configuration']['tests'][p.test_id]['visible']:
-            step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
-        else:
-            step_feedback.set('Tracker uses the hidden configuration value.')
+        step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
         state['recipes'][p.test_id] = p
         count = p.cycles if p.test_id in {'ENV_026', 'ENV_004'} else (max(ph.cycle for ph in phases) if p.test_id == 'ENV_012' else p.number_of_cycles)
         message = f'Total Duration: {samples[-1].time_s/3600:.3f} h · {len(samples)} Data Points · {count} Cycle(s)'
@@ -1358,34 +1420,30 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def build_form(p):
         for widget in form.winfo_children(): widget.destroy()
         values.clear()
-        tracker_step.set(str(p.tracker_step_seconds))
-        state['tracker_step'] = p.tracker_step_seconds
-        x_unit.set(p.x_axis_unit)
-        state['axis_unit'] = p.x_axis_unit
-        unit_factor = TIME_UNITS[p.x_axis_unit][0]
-        x_start.set(format(p.x_axis_start_seconds/unit_factor,'.15g'))
-        x_step.set('' if p.x_axis_step_seconds is None else format(p.x_axis_step_seconds/unit_factor,'.15g'))
-        x_end.set('' if p.x_axis_end_seconds is None else format(p.x_axis_end_seconds/unit_factor,'.15g'))
+        global_values = state['global_values']
+        tracker_step.set(str(global_values['tracker_step_seconds']))
+        state['tracker_step'] = global_values['tracker_step_seconds']
+        x_unit.set(global_values['x_axis_unit'])
+        state['axis_unit'] = global_values['x_axis_unit']
+        unit_factor = TIME_UNITS[global_values['x_axis_unit']][0]
+        x_start.set(format(global_values['x_axis_start_seconds']/unit_factor,'.15g'))
+        x_step.set('' if global_values['x_axis_step_seconds'] is None else format(global_values['x_axis_step_seconds']/unit_factor,'.15g'))
+        x_end.set('' if global_values['x_axis_end_seconds'] is None else format(global_values['x_axis_end_seconds']/unit_factor,'.15g'))
         update_unit_labels()
         visible = state['configuration']['tests'][p.test_id]['visible']
         for widget in (unit_label,unit_choice,x_start_widget_label,x_start_entry,x_step_widget_label,x_step_entry,
                        x_end_widget_label,x_end_entry,axis_apply_button,tracker_label,tracker_entry,tracker_apply):
             widget.pack_forget()
-        if 'x_axis_unit' in visible:
-            unit_label.pack(side='left',padx=6);unit_choice.pack(side='left',padx=6)
-        if 'x_axis_start_seconds' in visible:
-            x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
-        if 'x_axis_end_seconds' in visible:
-            x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=6)
-        if 'x_axis_step_seconds' in visible:
-            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
-        if {'x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'} & set(visible): axis_apply_button.pack(side='left')
-        if 'tracker_step_seconds' in visible:
-            tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
+        unit_label.pack(side='left',padx=6);unit_choice.pack(side='left',padx=6)
+        x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
+        x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=6)
+        x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
+        axis_apply_button.pack(side='left')
+        tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
         row = 0
-        for key in visible:
+        for key in list(visible) + ACTUATOR_VISIBLE_KEYS:
             if key in SPECIAL_CONTROLS: continue
-            value = getattr(p,key)
+            value = global_values[key] if key in ACTUATOR_VISIBLE_KEYS else getattr(p,key)
             ttk.Label(form,text=parameter_label(key),wraplength=250).grid(row=row,column=0,sticky='w',padx=(0,8),pady=5)
             var = tk.BooleanVar(value=value) if isinstance(value,bool) else tk.StringVar(value='' if value is None else str(value))
             values[key] = var
@@ -1447,7 +1505,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def save_config():
         if not update(): return
         try:
-            state['configuration'] = save_current_test(state['config_path'],state['p'])
+            state['configuration'] = save_current_test(state['config_path'],state['p'],
+                                                       global_values=state['global_values'])
             messagebox.showinfo('Save Current Test', selected.get()+' saved to '+str(state['config_path'])+'\nOther test sections were not changed.')
         except (ValueError,TypeError,OSError) as exc:
             messagebox.showerror('Save Failed',str(exc))
@@ -1458,7 +1517,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         try:
             config = load_configuration(path)
             recipes = {tid:parameters_from_configuration(config,tid) for tid in GENERATORS}
-            state.update(configuration=config,recipes=recipes,config_path=Path(path))
+            state.update(configuration=config,recipes=recipes,config_path=Path(path),
+                         global_values={**config['global']['actuator'], **config['global']['chart']})
             state.pop('form_test',None)
             switch_test()
         except (ValueError,TypeError,OSError) as exc:
