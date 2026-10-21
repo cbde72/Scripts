@@ -525,7 +525,8 @@ def open_description(test_id):
 
 SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(2).docx'
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config_V04.json')
-COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds'.split()
+COMMON_KEYS = 'humidity_rh active_mode standby_mode'.split()
+CSV_KEYS = ['sample_seconds']
 ACTUATOR_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_pause_seconds load_close_seconds load_max_percent'.split()
 ACTUATOR_VISIBLE_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_close_seconds load_pause_seconds'.split()
 VOLTAGE_KEYS = 'minimum_voltage_v nominal_voltage_v ua_voltage_v ub_voltage_v maximum_voltage_v off_voltage_v'.split()
@@ -534,7 +535,11 @@ CHART_KEYS = ('tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step
               'humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh '
               'load_axis_min_percent load_axis_max_percent load_axis_step_percent '
               'voltage_axis_min_v voltage_axis_max_v voltage_axis_step_v').split()
-GLOBAL_KEYS = set(ACTUATOR_KEYS + CHART_KEYS + VOLTAGE_KEYS)
+GLOBAL_SECTION_KEYS = {'csv': CSV_KEYS, 'actuator': ACTUATOR_KEYS,
+                       'chart': CHART_KEYS, 'voltage': VOLTAGE_KEYS}
+GLOBAL_KEYS = set(key for keys in GLOBAL_SECTION_KEYS.values() for key in keys)
+GLOBAL_VISIBLE_KEYS = {'sample_seconds', 'tracker_step_seconds', 'x_axis_unit',
+                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds'}
 TEST_KEYS = {
  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
@@ -579,10 +584,13 @@ def parameter_label(key):
 
 def default_configuration():
     defaults = asdict(Parameters())
+    global_config = {}
+    for section, keys in GLOBAL_SECTION_KEYS.items():
+        global_config[section] = {
+            'visible': {key: defaults[key] for key in keys if key in GLOBAL_VISIBLE_KEYS},
+            'unvisible': {key: defaults[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
     config = {'schema_version':4, 'source_document':SOURCE_DOCUMENT,
-              'global': {'actuator': {key: defaults[key] for key in ACTUATOR_KEYS},
-                         'chart': {key: defaults[key] for key in CHART_KEYS},
-                         'voltage': {key: defaults[key] for key in VOLTAGE_KEYS}}, 'tests':{}}
+              'global': global_config, 'tests':{}}
     for tid in GENERATORS:
         values = asdict(default_parameters(tid))
         keys = list(dict.fromkeys(TEST_KEYS[tid].split()+COMMON_KEYS))
@@ -606,24 +614,75 @@ def migrate_schema3(config):
     defaults = default_configuration()['global']
     migrated['schema_version'] = 4
     for section in ('actuator', 'chart'):
-        for key, value in defaults[section].items():
+        default_values = {**defaults[section]['visible'], **defaults[section]['unvisible']}
+        for key, value in default_values.items():
             migrated['global'][section].setdefault(key, value)
-    migrated['global']['voltage'] = copy.deepcopy(defaults['voltage'])
+    migrated['global']['voltage'] = {**defaults['voltage']['visible'], **defaults['voltage']['unvisible']}
     for entry in migrated.get('tests', {}).values():
         entry.pop('chart_overrides', None)
     return migrated
+
+
+def normalize_schema4(config):
+    """Upgrade the original flat V04 globals to visible/unvisible sections."""
+    import copy
+    normalized = copy.deepcopy(config)
+    source_global = normalized.get('global', {})
+    global_config = {}
+    defaults = asdict(Parameters())
+    flat_globals = {}
+    for section, keys in GLOBAL_SECTION_KEYS.items():
+        source = source_global.get(section, {})
+        if isinstance(source, dict) and 'visible' in source and 'unvisible' in source:
+            values = {**source['unvisible'], **source['visible']}
+        else:
+            values = dict(source) if isinstance(source, dict) else {}
+        for key in keys:
+            values.setdefault(key, defaults[key])
+        flat_globals.update(values)
+        global_config[section] = {
+            'visible': {key: values[key] for key in keys if key in GLOBAL_VISIBLE_KEYS},
+            'unvisible': {key: values[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
+    normalized['global'] = global_config
+    for entry in normalized.get('tests', {}).values():
+        overrides = dict(entry.get('overrides', {}))
+        for section in ('visible', 'unvisible'):
+            for key in list(entry.get(section, {})):
+                if key in GLOBAL_KEYS:
+                    value = entry[section].pop(key)
+                    if value != flat_globals[key]:
+                        overrides[key] = value
+        if overrides:
+            entry['overrides'] = overrides
+        else:
+            entry.pop('overrides', None)
+    return normalized
+
+
+def flattened_global(config):
+    return {key: value for section in config['global'].values()
+            for values in (section['unvisible'], section['visible']) for key, value in values.items()}
+
+
+def visible_global_keys(config):
+    return [key for section in config['global'].values() for key in section['visible']]
 
 
 def parameters_from_configuration(config, test_id):
     if config.get('schema_version') != 4 or not isinstance(config.get('tests'),dict):
         raise ValueError('Expected a schema_version 4 overall configuration with global and tests sections.')
     global_config = config.get('global')
-    if (not isinstance(global_config, dict) or not isinstance(global_config.get('actuator'), dict)
-            or not isinstance(global_config.get('chart'), dict) or not isinstance(global_config.get('voltage'), dict)):
-        raise ValueError('Schema 4 requires global.actuator, global.chart and global.voltage objects.')
-    for section, expected in (('actuator', set(ACTUATOR_KEYS)), ('chart', set(CHART_KEYS)),
-                              ('voltage', set(VOLTAGE_KEYS))):
-        actual = set(global_config[section])
+    if not isinstance(global_config, dict) or set(global_config) != set(GLOBAL_SECTION_KEYS):
+        raise ValueError('Schema 4 requires global.csv, global.actuator, global.chart and global.voltage objects.')
+    for section, expected_keys in GLOBAL_SECTION_KEYS.items():
+        section_data = global_config.get(section)
+        if not isinstance(section_data, dict) or not isinstance(section_data.get('visible'), dict) or not isinstance(section_data.get('unvisible'), dict):
+            raise ValueError(f'global.{section} requires visible and unvisible objects.')
+        overlap = set(section_data['visible']) & set(section_data['unvisible'])
+        if overlap:
+            raise ValueError(f'global.{section}: parameters occur in both visibility sections: {sorted(overlap)}')
+        actual = set(section_data['visible']) | set(section_data['unvisible'])
+        expected = set(expected_keys)
         if actual != expected:
             raise ValueError(f'global.{section} keys differ; missing={sorted(expected-actual)}, extra={sorted(actual-expected)}')
     if test_id not in config['tests']:
@@ -639,9 +698,11 @@ def parameters_from_configuration(config, test_id):
         raise ValueError(test_id+': global parameters are not allowed in test sections: '+', '.join(sorted(misplaced)))
     if 'chart_overrides' in entry:
         raise ValueError(test_id+': chart_overrides are not allowed in schema 4.')
+    overrides = entry.get('overrides', {})
+    if not isinstance(overrides, dict) or any(key not in GLOBAL_KEYS for key in overrides):
+        raise ValueError(test_id+': overrides may contain global parameters only.')
     values = asdict(default_parameters(test_id))
-    combined = {**global_config['actuator'], **global_config['chart'], **global_config['voltage'],
-                **entry['unvisible'], **entry['visible']}
+    combined = {**flattened_global(config), **overrides, **entry['unvisible'], **entry['visible']}
     for key, value in combined.items():
         if key not in values or key == 'test_id':
             raise ValueError(test_id+': unknown or removed parameter '+key)
@@ -668,11 +729,18 @@ def parameters_from_configuration(config, test_id):
 def load_configuration(path=DEFAULT_CONFIG_PATH):
     path = Path(path)
     config = json.loads(path.read_text(encoding='utf-8-sig'))
+    rewrite = False
     if config.get('schema_version') == 3:
         backup = path.with_name(path.stem+'.schema3.backup'+path.suffix)
         if not backup.exists():
             backup.write_bytes(path.read_bytes())
         config = migrate_schema3(config)
+        rewrite = True
+    if config.get('schema_version') == 4:
+        normalized = normalize_schema4(config)
+        rewrite = rewrite or normalized != config
+        config = normalized
+    if rewrite:
         temporary = path.with_name(path.name+'.schema4.tmp')
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
         temporary.replace(path)
@@ -696,10 +764,17 @@ def save_current_test(path, parameters, entry_template=None, global_values=None)
     for section in ('visible','unvisible'):
         for key in entry[section]:
             entry[section][key] = values[key]
-    global_values = values if global_values is None else global_values
-    for section in ('actuator','chart','voltage'):
-        for key in config['global'][section]:
-            config['global'][section][key] = global_values[key]
+    base_globals = flattened_global(config)
+    overrides = dict(entry.get('overrides', {}))
+    for key in visible_global_keys(config):
+        if values[key] == base_globals[key]:
+            overrides.pop(key, None)
+        else:
+            overrides[key] = values[key]
+    if overrides:
+        entry['overrides'] = overrides
+    else:
+        entry.pop('overrides', None)
     config['tests'][tid] = entry
     for key in GENERATORS:
         parameters_from_configuration(config,key)
@@ -1074,8 +1149,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     state = {'recipes': {tid:parameters_from_configuration(configuration,tid) for tid in GENERATORS},
              'configuration':configuration, 'config_path':Path(config_path),
              'tracker_step':60.0, 'axis_unit':'Seconds',
-             'global_values': {**configuration['global']['actuator'], **configuration['global']['chart'],
-                               **configuration['global']['voltage']}}
+             'global_values': flattened_global(configuration)}
     markers = MeasurementMarkers()
     values = {}
     def read_axis():
@@ -1135,13 +1209,12 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         args['x_axis_step_seconds'] = axis_step
         args['x_axis_end_seconds'] = axis_end
         args['x_axis_unit'] = x_unit.get()
-        editable_global = set(ACTUATOR_VISIBLE_KEYS) | SPECIAL_CONTROLS
-        for key in GLOBAL_KEYS - editable_global:
-            args[key] = state['global_values'][key]
-        global_values = {key: args[key] for key in GLOBAL_KEYS}
+        visible_globals = set(visible_global_keys(state['configuration']))
+        overrides = state['configuration']['tests'][selected.get()].get('overrides', {})
+        for key in GLOBAL_KEYS - visible_globals:
+            args[key] = overrides.get(key, state['global_values'][key])
         p = Parameters(**args)
         p.validate()
-        state['global_values'].update(global_values)
         return p
 
     def hide_tracker(event=None):
@@ -1467,30 +1540,36 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def build_form(p):
         for widget in form.winfo_children(): widget.destroy()
         values.clear()
-        global_values = state['global_values']
-        tracker_step.set(str(global_values['tracker_step_seconds']))
-        state['tracker_step'] = global_values['tracker_step_seconds']
-        x_unit.set(global_values['x_axis_unit'])
-        state['axis_unit'] = global_values['x_axis_unit']
-        unit_factor = TIME_UNITS[global_values['x_axis_unit']][0]
-        x_start.set(format(global_values['x_axis_start_seconds']/unit_factor,'.15g'))
-        x_step.set('' if global_values['x_axis_step_seconds'] is None else format(global_values['x_axis_step_seconds']/unit_factor,'.15g'))
-        x_end.set('' if global_values['x_axis_end_seconds'] is None else format(global_values['x_axis_end_seconds']/unit_factor,'.15g'))
+        tracker_step.set(str(p.tracker_step_seconds))
+        state['tracker_step'] = p.tracker_step_seconds
+        x_unit.set(p.x_axis_unit)
+        state['axis_unit'] = p.x_axis_unit
+        unit_factor = TIME_UNITS[p.x_axis_unit][0]
+        x_start.set(format(p.x_axis_start_seconds/unit_factor,'.15g'))
+        x_step.set('' if p.x_axis_step_seconds is None else format(p.x_axis_step_seconds/unit_factor,'.15g'))
+        x_end.set('' if p.x_axis_end_seconds is None else format(p.x_axis_end_seconds/unit_factor,'.15g'))
         update_unit_labels()
         visible = state['configuration']['tests'][p.test_id]['visible']
+        global_visible = set(visible_global_keys(state['configuration']))
         for widget in (unit_label,unit_choice,x_start_widget_label,x_start_entry,x_step_widget_label,x_step_entry,
                        x_end_widget_label,x_end_entry,axis_apply_button,tracker_label,tracker_entry,tracker_apply):
             widget.pack_forget()
-        unit_label.pack(side='left',padx=6);unit_choice.pack(side='left',padx=6)
-        x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
-        x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=6)
-        x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
-        axis_apply_button.pack(side='left')
-        tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
+        if 'x_axis_unit' in global_visible:
+            unit_label.pack(side='left',padx=6);unit_choice.pack(side='left',padx=6)
+        if 'x_axis_start_seconds' in global_visible:
+            x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
+        if 'x_axis_end_seconds' in global_visible:
+            x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=6)
+        if 'x_axis_step_seconds' in global_visible:
+            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
+        if {'x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'} & global_visible:
+            axis_apply_button.pack(side='left')
+        if 'tracker_step_seconds' in global_visible:
+            tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
         row = 0
-        for key in list(visible) + ACTUATOR_VISIBLE_KEYS:
+        for key in list(visible) + visible_global_keys(state['configuration']):
             if key in SPECIAL_CONTROLS: continue
-            value = global_values[key] if key in ACTUATOR_VISIBLE_KEYS else getattr(p,key)
+            value = getattr(p,key)
             ttk.Label(form,text=parameter_label(key),wraplength=250).grid(row=row,column=0,sticky='w',padx=(0,8),pady=5)
             var = tk.BooleanVar(value=value) if isinstance(value,bool) else tk.StringVar(value='' if value is None else str(value))
             values[key] = var
@@ -1552,8 +1631,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def save_config():
         if not update(): return
         try:
-            state['configuration'] = save_current_test(state['config_path'],state['p'],
-                                                       global_values=state['global_values'])
+            state['configuration'] = save_current_test(state['config_path'],state['p'])
             messagebox.showinfo('Save Current Test', selected.get()+' saved to '+str(state['config_path'])+'\nOther test sections were not changed.')
         except (ValueError,TypeError,OSError) as exc:
             messagebox.showerror('Save Failed',str(exc))
@@ -1565,8 +1643,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             config = load_configuration(path)
             recipes = {tid:parameters_from_configuration(config,tid) for tid in GENERATORS}
             state.update(configuration=config,recipes=recipes,config_path=Path(path),
-                         global_values={**config['global']['actuator'], **config['global']['chart'],
-                                        **config['global']['voltage']})
+                         global_values=flattened_global(config))
             state.pop('form_test',None)
             switch_test()
         except (ValueError,TypeError,OSError) as exc:
