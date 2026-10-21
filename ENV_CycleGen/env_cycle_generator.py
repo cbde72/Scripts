@@ -29,6 +29,14 @@ def convert_axis_input(text, from_unit, to_unit):
     return format(converted, '.15g')
 
 
+def convert_axis_start_input(text, from_unit, to_unit):
+    raw = text.strip().replace(',', '.')
+    value = 0.0 if not raw else float(raw)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError('X Start must be finite and greater than or equal to zero.')
+    return format(value * TIME_UNITS[from_unit][0] / TIME_UNITS[to_unit][0], '.15g')
+
+
 @dataclass
 class Parameters:
     test_id: str = 'ENV_026'
@@ -70,6 +78,7 @@ class Parameters:
     gradient_umin_minutes: float = 1.0
     x_axis_step_seconds: float | None = None
     x_axis_end_seconds: float | None = None
+    x_axis_start_seconds: float = 0.0
     x_axis_unit: str = 'Seconds'
     total_hours: float = 504.0
     inactive_hours: float = 47.0
@@ -122,6 +131,8 @@ class Parameters:
         for v in (self.x_axis_step_seconds, self.x_axis_end_seconds):
             if v is not None and v <= 0:
                 raise ValueError('X Step and X End must be positive, or blank for automatic.')
+        if self.x_axis_start_seconds < 0:
+            raise ValueError('X Start must be greater than or equal to zero.')
         if self.test_id == 'ENV_026' and (self.active_hours <= 0 or self.standby_hours <= 0):
             raise ValueError('Both operating durations must be greater than zero.')
         if self.sample_seconds <= 0:
@@ -506,7 +517,7 @@ def open_description(test_id):
 
 SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(1).docx'
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config.json')
-COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds tracker_step_seconds x_axis_unit x_axis_step_seconds x_axis_end_seconds load_open_seconds load_hold_seconds load_pause_seconds'.split()
+COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step_seconds x_axis_end_seconds load_open_seconds load_hold_seconds load_pause_seconds'.split()
 TEST_KEYS = {
  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c nominal_voltage_v minimum_voltage_v maximum_voltage_v ua_voltage_v ub_voltage_v precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
@@ -519,7 +530,7 @@ TEST_KEYS = {
 }
 # These are initial visibility choices, not hard-coded GUI constraints.
 HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh load_close_seconds load_max_percent load_axis_min_percent load_axis_max_percent load_axis_step_percent'.split())
-SPECIAL_CONTROLS = {'tracker_step_seconds','x_axis_unit','x_axis_step_seconds','x_axis_end_seconds'}
+SPECIAL_CONTROLS = {'tracker_step_seconds','x_axis_unit','x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'}
 PARAMETER_LABELS = {
  'humidity_rh':'Default Relative Humidity [% RH]', 'sample_seconds':'CSV Time Step [s]',
  'active_mode':'Operating Mode - Function / Normal Operation', 'standby_mode':'Operating Mode - Inactive / Preconditioning',
@@ -647,6 +658,24 @@ def maximize_window(root):
     root.geometry(f'{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0')
 
 
+def build_load_schedule(phases, starts):
+    """Precompute the mode intervals needed by load_percent_at()."""
+    active_starts = [None] * len(phases)
+    off_starts = [None] * len(phases)
+    active_start = None
+    off_start = None
+    for i, phase in enumerate(phases):
+        previous = phases[i - 1].mode if i else None
+        if phase.mode == '3.2' and previous != '3.2':
+            active_start = starts[i]
+            off_start = None
+        elif phase.mode != '3.2' and previous == '3.2':
+            off_start = starts[i]
+        active_starts[i] = active_start
+        off_starts[i] = off_start
+    return active_starts, off_starts
+
+
 class Timeline:
     """Exact cursor values independent of CSV sampling; new mode at boundaries."""
 
@@ -662,6 +691,7 @@ class Timeline:
                 raise ValueError('Phase duration must be positive.')
             self.starts.append(self.duration_s)
             self.duration_s += phase.duration_s
+        self.load_schedule = build_load_schedule(self.phases, self.starts)
 
     def at(self, time_s: float) -> Sample:
         if not math.isfinite(time_s):
@@ -674,7 +704,7 @@ class Timeline:
         at_threshold = (ph.humidity_at_threshold is not None
                         and temperature == max(ph.temperature_start_c, ph.temperature_end_c))
         rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
-        load = load_percent_at(self.phases, self.starts, t, self.parameters) if self.parameters else 0.0
+        load = load_percent_at(self.phases, self.starts, t, self.parameters, self.load_schedule) if self.parameters else 0.0
         return Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
                       ph.undefined_humidity_label if rh is None else '', load)
 
@@ -756,6 +786,7 @@ def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
     times = {round(i * p.sample_seconds, 9): i * p.sample_seconds for i in range(n)}
     times.update({round(t, 9): t for t in starts + [end]})
     samples = []
+    load_schedule = build_load_schedule(phases, starts)
     for t in sorted(times.values()):
         idx = min(bisect.bisect_right(starts, t) - 1, len(phases) - 1)
         ph = phases[idx]
@@ -766,21 +797,19 @@ def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
         rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
         samples.append(Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
                               ph.undefined_humidity_label if rh is None else '',
-                              load_percent_at(phases, starts, t, p)))
+                              load_percent_at(phases, starts, t, p, load_schedule)))
     return phases, samples
 
 
-def load_percent_at(phases, starts, time_s, p):
-    """Return the trapezoidal load driven by exact operating-mode transitions."""
+def load_percent_at(phases, starts, time_s, p, schedule=None):
+    """Return the trapezoidal load using a precomputed mode-change schedule."""
     idx = min(bisect.bisect_right(starts, time_s) - 1, len(phases) - 1)
     mode = phases[idx].mode
     open_s, hold_s, pause_s = p.load_open_seconds, p.load_hold_seconds, p.load_pause_seconds
     duration = 2 * open_s + hold_s + pause_s
 
-    active_start = None
-    for i, ph in enumerate(phases[:idx + 1]):
-        if ph.mode == '3.2' and (i == 0 or phases[i - 1].mode != '3.2'):
-            active_start = starts[i]
+    schedule = schedule or build_load_schedule(phases, starts)
+    active_start = schedule[0][idx]
     if active_start is None:
         return 0.0
 
@@ -799,10 +828,7 @@ def load_percent_at(phases, starts, time_s, p):
     if mode == '3.2':
         return active_load(max(0.0, time_s - active_start))
 
-    switched_off = None
-    for i, ph in enumerate(phases[:idx + 1]):
-        if ph.mode != '3.2' and (i == 0 or phases[i - 1].mode == '3.2'):
-            switched_off = starts[i]
+    switched_off = schedule[1][idx]
     if switched_off is None:
         return 0.0
     value_at_switch = active_load(max(0.0, switched_off - active_start))
@@ -900,18 +926,24 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     unit_choice.pack(side='left', padx=6)
     axis_controls = ttk.Frame(controls)
     axis_controls.pack(side='left', padx=(14, 0))
-    x_step_label = tk.StringVar(value='X Start: 0 s   X Step [s]')
-    x_step_widget_label = ttk.Label(axis_controls, textvariable=x_step_label)
-    x_step_widget_label.pack(side='left')
-    x_step = tk.StringVar(value='')
-    x_step_entry = ttk.Entry(axis_controls, textvariable=x_step, width=9)
-    x_step_entry.pack(side='left', padx=6)
+    x_start_label = tk.StringVar(value='X Start [s]')
+    x_start_widget_label = ttk.Label(axis_controls, textvariable=x_start_label)
+    x_start_widget_label.pack(side='left')
+    x_start = tk.StringVar(value='0')
+    x_start_entry = ttk.Entry(axis_controls, textvariable=x_start, width=9)
+    x_start_entry.pack(side='left', padx=6)
     x_end_label = tk.StringVar(value='X End [s]')
     x_end_widget_label = ttk.Label(axis_controls, textvariable=x_end_label)
     x_end_widget_label.pack(side='left')
     x_end = tk.StringVar(value='')
     x_end_entry = ttk.Entry(axis_controls, textvariable=x_end, width=11)
     x_end_entry.pack(side='left', padx=6)
+    x_step_label = tk.StringVar(value='X Step [s]')
+    x_step_widget_label = ttk.Label(axis_controls, textvariable=x_step_label)
+    x_step_widget_label.pack(side='left')
+    x_step = tk.StringVar(value='')
+    x_step_entry = ttk.Entry(axis_controls, textvariable=x_step, width=9)
+    x_step_entry.pack(side='left', padx=6)
     axis_apply_button = ttk.Button(axis_controls, text='Apply Axis', command=lambda: plot())
     axis_apply_button.pack(side='left')
     axis_feedback = tk.StringVar(value='Blank = automatic. Chart time always starts at 0 s.')
@@ -955,25 +987,32 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         def parse(var):
             text = var.get().strip().replace(',', '.')
             return None if not text else float(text)*TIME_UNITS[x_unit.get()][0]
+        start_text = x_start.get().strip().replace(',', '.')
+        start = 0.0 if not start_text else float(start_text)*TIME_UNITS[x_unit.get()][0]
         step, end = parse(x_step), parse(x_end)
+        if not math.isfinite(start) or start < 0:
+            raise ValueError('X Start must be finite and greater than or equal to zero.')
         if any(v is not None and (not math.isfinite(v) or v <= 0) for v in (step, end)):
             raise ValueError('X Step and X End must be positive and finite, or blank for automatic.')
-        return step, end
+        return start, step, end
 
     def update_unit_labels():
         symbol = TIME_UNITS[x_unit.get()][1]
-        x_step_label.set(f'X Start: 0 {symbol}   X Step [{symbol}]')
+        x_start_label.set(f'X Start [{symbol}]')
+        x_step_label.set(f'X Step [{symbol}]')
         x_end_label.set(f'X End [{symbol}]')
 
     def change_axis_unit(event=None):
         old_unit, new_unit = state['axis_unit'], x_unit.get()
         try:
+            new_start = convert_axis_start_input(x_start.get(), old_unit, new_unit)
             new_step = convert_axis_input(x_step.get(), old_unit, new_unit)
             new_end = convert_axis_input(x_end.get(), old_unit, new_unit)
         except (ValueError, OverflowError):
             x_unit.set(old_unit)
-            axis_feedback.set('Correct X Step / X End before changing Time Unit. Previous unit remains active.')
+            axis_feedback.set('Correct X Start / X Step / X End before changing Time Unit. Previous unit remains active.')
             return
+        x_start.set(new_start)
         x_step.set(new_step)
         x_end.set(new_end)
         state['axis_unit'] = new_unit
@@ -999,7 +1038,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         visible = state['configuration']['tests'][selected.get()]['visible']
         if 'tracker_step_seconds' in visible:
             args['tracker_step_seconds'] = float(tracker_step.get().strip().replace(',', '.'))
-        axis_step,axis_end = read_axis()
+        axis_start,axis_step,axis_end = read_axis()
+        if 'x_axis_start_seconds' in visible: args['x_axis_start_seconds'] = axis_start
         if 'x_axis_step_seconds' in visible: args['x_axis_step_seconds'] = axis_step
         if 'x_axis_end_seconds' in visible: args['x_axis_end_seconds'] = axis_end
         if 'x_axis_unit' in visible: args['x_axis_unit'] = x_unit.get()
@@ -1035,7 +1075,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             canvas.create_oval(xx-4, yy-4, xx+4, yy+4, fill=color, outline='white', tags='tracker')
         humidity = (s.undefined_humidity_label or 'unspecified') if s.humidity_rh is None else f'{s.humidity_rh:.2f} % RH'
         voltage = '' if s.voltage_v is None else f'  |  Voltage: {s.voltage_v:.2f} V'
-        tracker_labels[0].configure(text=f'Time: {(s.time_s-start)/TIME_UNITS[x_unit.get()][0]:.2f} {TIME_UNITS[x_unit.get()][1]}')
+        tracker_labels[0].configure(text=f'Time: {s.time_s/TIME_UNITS[x_unit.get()][0]:.2f} {TIME_UNITS[x_unit.get()][1]}')
         tracker_labels[1].configure(text=f'Temperature: {s.temperature_c:.2f} °C')
         tracker_labels[2].configure(text=f'Relative Humidity: {humidity}')
         tracker_labels[3].configure(text=f'Mode: {s.operation_mode}{voltage}')
@@ -1122,19 +1162,17 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         draw_tracker((event.x-left)/(right-left))
 
     def plot(event=None):
-        canvas.delete('all')
-        state.pop('geometry', None)
         if 'timeline' not in state:
             return
         timeline = state['timeline']
         timeline_parameters = state['p']
+        load_schedule = timeline.load_schedule
         try:
-            axis_step, axis_end = read_axis()
+            axis_start, axis_step, axis_end = read_axis()
         except (ValueError, OverflowError) as exc:
             axis_feedback.set(str(exc))
-            hide_tracker()
             return
-        start, end = 0.0, timeline.duration_s
+        base_start, base_end = 0.0, timeline.duration_s
         if chart_view.get() == 'Single Cycle':
             try:
                 cycle = int(preview_cycle.get())
@@ -1147,11 +1185,16 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 canvas.create_text(20, 30, anchor='w', text='Cycle number is outside the generated profile.')
                 hide_tracker()
                 return
-            start, end = spans[0][0], spans[-1][1]
+            base_start, base_end = spans[0][0], spans[-1][1]
+        available_duration = base_end-base_start
+        requested_end = available_duration if axis_end is None else axis_end
+        if not 0 <= axis_start < requested_end <= available_duration:
+            axis_feedback.set(f'Require 0 ≤ X Start < X End ≤ {available_duration/TIME_UNITS[x_unit.get()][0]:.6g} {TIME_UNITS[x_unit.get()][1]}. Previous view remains active.')
+            return
+        start, end = base_start+axis_start, base_start+requested_end
         data_end = end
-        if axis_end is not None:
-            end = start+axis_end
-        data_end = min(end, data_end)
+        canvas.delete('all')
+        state.pop('geometry', None)
         state['data_end'] = data_end
         try:
             tick_values, tick_stride = axis_ticks(end-start, axis_step)
@@ -1159,7 +1202,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             axis_feedback.set(str(exc))
             return
         unit_factor, unit_symbol = TIME_UNITS[x_unit.get()]
-        axis_feedback.set(f'Time [{unit_symbol}], starting at 0. Blank = automatic.' if tick_stride == 1 else
+        axis_feedback.set(f'Time [{unit_symbol}], X Start {start/unit_factor:.6g}. Blank X End = profile end.' if tick_stride == 1 else
                           f'Time [{unit_symbol}]. Showing every {tick_stride}th X Step to keep labels readable.')
         segments = [(max(t, start), min(t+ph.duration_s, data_end), ph, t)
                     for t, ph in zip(timeline.starts, timeline.phases)
@@ -1190,7 +1233,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 if k == 1:
                     return ph.humidity_rh
                 if label == 'Load [%]':
-                    return load_percent_at(timeline.phases, timeline.starts, t, timeline_parameters)
+                    return load_percent_at(timeline.phases, timeline.starts, t, timeline_parameters, load_schedule)
                 if k == 3:
                     return ph.voltage_v
                 f = (t-ph_start)/ph.duration_s
@@ -1223,19 +1266,38 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             previous = None
             undefined_spans = []
             for a, b, ph, origin in segments:
-                va, vb = value(ph, a, origin), value(ph, b, origin)
-                if va is None or vb is None:
-                    if k == 1 and ph.undefined_humidity_label:
-                        if undefined_spans and abs(undefined_spans[-1][1]-a) < 1e-6:
-                            undefined_spans[-1] = (undefined_spans[-1][0], b)
-                        else:
-                            undefined_spans.append((a, b))
-                    previous = None
-                    continue
-                if previous is not None:
-                    canvas.create_line(x(a), y(previous), x(a), y(va), fill=color, width=2)
-                canvas.create_line(x(a), y(va), x(b), y(vb), fill=color, width=2)
-                previous = vb
+                points = [a, b]
+                if label == 'Load [%]':
+                    active_start = load_schedule[0][min(bisect.bisect_right(timeline.starts, origin)-1,
+                                                       len(timeline.phases)-1)]
+                    if active_start is not None:
+                        cycle_duration = (2 * timeline_parameters.load_open_seconds
+                                          + timeline_parameters.load_hold_seconds
+                                          + timeline_parameters.load_pause_seconds)
+                        first_cycle = math.floor((a-active_start)/cycle_duration)
+                        last_cycle = math.ceil((b-active_start)/cycle_duration)
+                        for cycle_index in range(first_cycle, last_cycle + 1):
+                            base = active_start + cycle_index * cycle_duration
+                            points.extend(base + offset for offset in (
+                                0, timeline_parameters.load_open_seconds,
+                                timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds,
+                                2 * timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds,
+                                cycle_duration))
+                        points = sorted({max(a, min(b, point)) for point in points})
+                for point_a, point_b in zip(points, points[1:]):
+                    va, vb = value(ph, point_a, origin), value(ph, point_b, origin)
+                    if va is None or vb is None:
+                        if k == 1 and ph.undefined_humidity_label:
+                            if undefined_spans and abs(undefined_spans[-1][1]-point_a) < 1e-6:
+                                undefined_spans[-1] = (undefined_spans[-1][0], point_b)
+                            else:
+                                undefined_spans.append((point_a, point_b))
+                        previous = None
+                        continue
+                    if previous is not None:
+                        canvas.create_line(x(point_a), y(previous), x(point_a), y(va), fill=color, width=2)
+                    canvas.create_line(x(point_a), y(va), x(point_b), y(vb), fill=color, width=2)
+                    previous = vb
             # Undefined guide is graphical only; it does not encode an RH value.
             for a, b in undefined_spans:
                 guide_y = (ytop+ybot)/2
@@ -1248,7 +1310,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             canvas.create_line(xx, top, xx, bottom, fill='#d5d9de', width=1)
             canvas.create_line(xx, bottom, xx, bottom+4, fill='#7d8792')
             if j % max(1, math.ceil(len(tick_values)/10)) == 0:
-                canvas.create_text(xx, bottom+12, text=f'{local_t/unit_factor:.6g} {unit_symbol}')
+                canvas.create_text(xx, bottom+12, text=f'{(start+local_t)/unit_factor:.6g} {unit_symbol}')
         state['geometry'] = (left, right, top, bottom, mappings, start, end)
         draw_markers()
         if 'cursor_fraction' in state:
@@ -1301,20 +1363,23 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         x_unit.set(p.x_axis_unit)
         state['axis_unit'] = p.x_axis_unit
         unit_factor = TIME_UNITS[p.x_axis_unit][0]
+        x_start.set(format(p.x_axis_start_seconds/unit_factor,'.15g'))
         x_step.set('' if p.x_axis_step_seconds is None else format(p.x_axis_step_seconds/unit_factor,'.15g'))
         x_end.set('' if p.x_axis_end_seconds is None else format(p.x_axis_end_seconds/unit_factor,'.15g'))
         update_unit_labels()
         visible = state['configuration']['tests'][p.test_id]['visible']
-        for widget in (unit_label,unit_choice,x_step_widget_label,x_step_entry,
+        for widget in (unit_label,unit_choice,x_start_widget_label,x_start_entry,x_step_widget_label,x_step_entry,
                        x_end_widget_label,x_end_entry,axis_apply_button,tracker_label,tracker_entry,tracker_apply):
             widget.pack_forget()
         if 'x_axis_unit' in visible:
             unit_label.pack(side='left',padx=6);unit_choice.pack(side='left',padx=6)
-        if 'x_axis_step_seconds' in visible:
-            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
+        if 'x_axis_start_seconds' in visible:
+            x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
         if 'x_axis_end_seconds' in visible:
             x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=6)
-        if {'x_axis_step_seconds','x_axis_end_seconds'} & set(visible): axis_apply_button.pack(side='left')
+        if 'x_axis_step_seconds' in visible:
+            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
+        if {'x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'} & set(visible): axis_apply_button.pack(side='left')
         if 'tracker_step_seconds' in visible:
             tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
         row = 0
@@ -1419,8 +1484,10 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     tracker_entry.bind('<KeyRelease>', lambda event: update(silent=True))
     x_step_entry.bind('<Return>', plot)
     x_end_entry.bind('<Return>', plot)
-    x_step_entry.bind('<KeyRelease>', lambda event: update(silent=True))
-    x_end_entry.bind('<KeyRelease>', lambda event: update(silent=True))
+    x_start_entry.bind('<Return>', plot)
+    x_start_entry.bind('<KeyRelease>', plot)
+    x_step_entry.bind('<KeyRelease>', plot)
+    x_end_entry.bind('<KeyRelease>', plot)
     root.after(100, switch_test)
     root.mainloop()
 
