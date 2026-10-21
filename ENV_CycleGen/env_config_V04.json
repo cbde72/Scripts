@@ -4,9 +4,10 @@
   "global": {
     "csv": {
       "visible": {
-        "sample_seconds": 60.0
       },
-      "unvisible": {}
+      "unvisible": {
+        "sample_seconds": 60.0
+      }
     },
     "actuator": {
       "visible": {},

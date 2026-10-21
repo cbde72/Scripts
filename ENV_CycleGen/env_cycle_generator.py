@@ -624,25 +624,30 @@ def migrate_schema3(config):
 
 
 def normalize_schema4(config):
-    """Upgrade the original flat V04 globals to visible/unvisible sections."""
+    """Upgrade flat V04 globals while preserving established visibility exactly."""
     import copy
     normalized = copy.deepcopy(config)
     source_global = normalized.get('global', {})
-    global_config = {}
+    global_config = copy.deepcopy(source_global)
     defaults = asdict(Parameters())
     flat_globals = {}
     for section, keys in GLOBAL_SECTION_KEYS.items():
         source = source_global.get(section, {})
-        if isinstance(source, dict) and 'visible' in source and 'unvisible' in source:
+        established_visibility = (isinstance(source, dict)
+                                  and isinstance(source.get('visible'), dict)
+                                  and isinstance(source.get('unvisible'), dict))
+        if established_visibility:
             values = {**source['unvisible'], **source['visible']}
         else:
             values = dict(source) if isinstance(source, dict) else {}
-        for key in keys:
-            values.setdefault(key, defaults[key])
+            for key in keys:
+                values.setdefault(key, defaults[key])
+            # GLOBAL_VISIBLE_KEYS defines only the initial/migrated layout. It
+            # must never reclassify an existing schema-4 configuration.
+            global_config[section] = {
+                'visible': {key: values[key] for key in keys if key in GLOBAL_VISIBLE_KEYS},
+                'unvisible': {key: values[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
         flat_globals.update(values)
-        global_config[section] = {
-            'visible': {key: values[key] for key in keys if key in GLOBAL_VISIBLE_KEYS},
-            'unvisible': {key: values[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
     normalized['global'] = global_config
     for entry in normalized.get('tests', {}).values():
         overrides = dict(entry.get('overrides', {}))
