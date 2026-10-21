@@ -53,10 +53,10 @@
         "ramp_c_per_min": 1.0,
         "ramp_mode": "3.1",
         "cycles": 1,
-		"humidity_rh": 60.0,
+        "humidity_rh": 60.0,
         "active_mode": "3.2",
         "standby_mode": "3.1",
-		"sample_seconds": 60.0,
+        "sample_seconds": 60.0,
         "temperature_axis_min_c": -50.0,
         "temperature_axis_max_c": 100.0,
         "temperature_axis_step_c": 10.0,
@@ -81,7 +81,7 @@
         "x_axis_end_seconds": null
       },
       "unvisible": {
-		"sample_seconds": 60.0,
+        "sample_seconds": 60.0,
         "hot_standby_minutes": 0.0,
         "number_of_cycles": 870,
         "humidity_rh": 60.0,
@@ -93,8 +93,7 @@
         "humidity_axis_min_rh": 50.0,
         "humidity_axis_max_rh": 100.0,
         "humidity_axis_step_rh": 5.0
-
-     }
+      }
     },
     "ENV_014": {
       "name": "Temperature Cycling Test",
@@ -144,7 +143,7 @@
         "x_axis_end_seconds": null
       },
       "unvisible": {
-		"gradient_umax_minutes": 1.0,
+        "gradient_umax_minutes": 1.0,
         "gradient_pause_minutes": 3.0,
         "gradient_umin_minutes": 1.0,
         "number_of_cycles": 1,
@@ -158,8 +157,7 @@
         "humidity_axis_min_rh": 50.0,
         "humidity_axis_max_rh": 100.0,
         "humidity_axis_step_rh": 5.0
-		  
-	  }
+      }
     },
     "ENV_012": {
       "name": "Steady-state Damp Heat Test",
@@ -175,7 +173,7 @@
         "x_axis_end_seconds": null
       },
       "unvisible": {
-		 "active_mode": "3.2",
+        "active_mode": "3.2",
         "standby_mode": "2.1",
         "sample_seconds": 60.0,
         "temperature_axis_min_c": -50.0,
@@ -184,7 +182,7 @@
         "humidity_axis_min_rh": 50.0,
         "humidity_axis_max_rh": 100.0,
         "humidity_axis_step_rh": 5.0
-	  }
+      }
     },
     "ENV_002": {
       "name": "Damp Heat Cycle 2 – Frost Test",
@@ -193,7 +191,7 @@
         "maximum_temperature_c": 65.0,
         "room_temperature_c": 25.0,
         "tracker_step_seconds": 60.0,
-        "x_axis_unit": "Seconds",
+        "x_axis_unit": "Hours",
         "x_axis_step_seconds": null,
         "x_axis_end_seconds": null
       },
@@ -203,11 +201,10 @@
         "rising_humidity_rh": 93.0,
         "cooling_humidity_rh": 80.0,
         "climate_check_minutes": 1.0,
-        "humidity_rh": 93.0,
+        "humidity_rh": 60.0,
         "active_mode": "3.2",
         "standby_mode": "3.1",
         "sample_seconds": 60.0,
-
         "climate_rise_minutes": 90.0,
         "climate_hot_minutes": 240.0,
         "climate_fall_minutes": 90.0,
@@ -254,7 +251,8 @@
         "temperature_axis_step_c": 20.0,
         "humidity_axis_min_rh": 50.0,
         "humidity_axis_max_rh": 100.0,
-        "humidity_axis_step_rh": 5.0      }
+        "humidity_axis_step_rh": 5.0
+      }
     }
   }
 }

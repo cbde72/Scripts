@@ -408,7 +408,8 @@ def climate_cycle(p: Parameters, cycle: int, frost: bool):
 
 def env002(p: Parameters) -> list[Phase]:
     p.validate()
-    # Split at the exact temperature threshold so drawing and event sampling agree.
+    # ENV_002 humidity is determined solely by temperature direction and Troom.
+    # Split every crossing at the exact threshold so plot, tracker and CSV agree.
     phases = []
     for cycle in range(1, p.number_of_cycles+1):
         for ph in climate_cycle(p, cycle, frost=cycle <= p.frost_cycles):
@@ -418,12 +419,15 @@ def env002(p: Parameters) -> list[Phase]:
                 cuts.insert(1, (p.room_temperature_c-a)/(b-a))
             for u, v in zip(cuts, cuts[1:]):
                 ta, tb = a+u*(b-a), a+v*(b-a)
-                rh = None if (ta+tb)/2 < p.room_temperature_c else ph.humidity_rh
+                midpoint = (ta+tb)/2
+                below_troom = midpoint < p.room_temperature_c
+                falling = tb < ta
+                rh = None if below_troom else (p.cooling_humidity_rh if falling else p.rising_humidity_rh)
                 phases.append(replace(ph, duration_s=ph.duration_s*(v-u),
                     temperature_start_c=ta, temperature_end_c=tb,
                     humidity_rh=rh,
                     undefined_humidity_label='n.def.' if rh is None else '',
-                    humidity_at_threshold=p.rising_humidity_rh if rh is None and max(ta, tb) == p.room_temperature_c else None))
+                    humidity_at_threshold=None))
     return phases
 
 
