@@ -1,0 +1,44 @@
+# Python Standard & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtuelle Umgebungen
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs und Editor-Dateien (VS Code, PyCharm, Spyder)
+.vscode/
+.spyderproject
+.spyproject
+.ropeproject
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
