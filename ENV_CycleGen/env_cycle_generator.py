@@ -96,6 +96,14 @@ class Parameters:
     ub_voltage_v: float = 48.0
     precondition_minutes: float = 30.0
     activation_minutes: float = 10.0
+    load_open_seconds: float = 10.0
+    load_hold_seconds: float = 10.0
+    load_pause_seconds: float = 5.0
+    load_close_seconds: float = 10.0
+    load_max_percent: float = 100.0
+    load_axis_min_percent: float = 0.0
+    load_axis_max_percent: float = 100.0
+    load_axis_step_percent: float = 10.0
     temperature_axis_min_c: float = -50.0
     temperature_axis_max_c: float = 100.0
     temperature_axis_step_c: float = 10.0
@@ -118,6 +126,8 @@ class Parameters:
             raise ValueError('Both operating durations must be greater than zero.')
         if self.sample_seconds <= 0:
             raise ValueError('Time step must be greater than zero.')
+        if self.load_open_seconds <= 0 or self.load_hold_seconds < 0 or self.load_pause_seconds < 0:
+            raise ValueError('Load opening time must be > 0; hold and pause times must be >= 0.')
         if self.tracker_step_seconds < 0:
             raise ValueError('Tracker Step must be zero (continuous) or greater than zero.')
         if isinstance(self.cycles, bool) or not isinstance(self.cycles, int) or not 1 <= self.cycles <= 10000:
@@ -222,6 +232,7 @@ class Sample:
     operation_mode: str
     voltage_v: float | None = None
     undefined_humidity_label: str = ""
+    load_percent: float = 0.0
 
 
 def env026(p: Parameters) -> list[Phase]:
@@ -495,7 +506,7 @@ def open_description(test_id):
 
 SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(1).docx'
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config.json')
-COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds tracker_step_seconds x_axis_unit x_axis_step_seconds x_axis_end_seconds'.split()
+COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds tracker_step_seconds x_axis_unit x_axis_step_seconds x_axis_end_seconds load_open_seconds load_hold_seconds load_pause_seconds'.split()
 TEST_KEYS = {
  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c nominal_voltage_v minimum_voltage_v maximum_voltage_v ua_voltage_v ub_voltage_v precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
@@ -507,7 +518,7 @@ TEST_KEYS = {
  'ENV_003': 'maximum_temperature_c room_temperature_c number_of_cycles rising_humidity_rh cooling_humidity_rh climate_check_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes',
 }
 # These are initial visibility choices, not hard-coded GUI constraints.
-HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh'.split())
+HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh load_close_seconds load_max_percent load_axis_min_percent load_axis_max_percent load_axis_step_percent'.split())
 SPECIAL_CONTROLS = {'tracker_step_seconds','x_axis_unit','x_axis_step_seconds','x_axis_end_seconds'}
 PARAMETER_LABELS = {
  'humidity_rh':'Default Relative Humidity [% RH]', 'sample_seconds':'CSV Time Step [s]',
@@ -529,6 +540,8 @@ PARAMETER_LABELS = {
  'hot_humidity_rh':'Hot Dwell RH [%]', 'rising_humidity_rh':'Temperature Rise RH [%]', 'cooling_humidity_rh':'Temperature Fall RH [%]',
  'climate_check_minutes':'Function Check Duration [min]', 'frost_cycles':'Initial Frost Cycles',
  'cold_check_duration_minutes':'Cold Function Check Duration [min]',
+ 'load_open_seconds':'Load Opening Time [s]', 'load_hold_seconds':'Load Hold Time [s]',
+ 'load_pause_seconds':'Load Pause Time [s]',
 }
 
 def parameter_label(key):
@@ -637,10 +650,11 @@ def maximize_window(root):
 class Timeline:
     """Exact cursor values independent of CSV sampling; new mode at boundaries."""
 
-    def __init__(self, phases: list[Phase]):
+    def __init__(self, phases: list[Phase], parameters: Parameters | None = None):
         if not phases:
             raise ValueError('The profile contains no phases.')
         self.phases = phases
+        self.parameters = parameters
         self.starts = []
         self.duration_s = 0.0
         for phase in phases:
@@ -660,8 +674,9 @@ class Timeline:
         at_threshold = (ph.humidity_at_threshold is not None
                         and temperature == max(ph.temperature_start_c, ph.temperature_end_c))
         rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
+        load = load_percent_at(self.phases, self.starts, t, self.parameters) if self.parameters else 0.0
         return Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
-                      ph.undefined_humidity_label if rh is None else '')
+                      ph.undefined_humidity_label if rh is None else '', load)
 
 
 def snap_tracker_time(time_s, step_s, start_s, end_s):
@@ -750,8 +765,48 @@ def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
                         and temperature == max(ph.temperature_start_c, ph.temperature_end_c))
         rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
         samples.append(Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
-                              ph.undefined_humidity_label if rh is None else ''))
+                              ph.undefined_humidity_label if rh is None else '',
+                              load_percent_at(phases, starts, t, p)))
     return phases, samples
+
+
+def load_percent_at(phases, starts, time_s, p):
+    """Return the trapezoidal load driven by exact operating-mode transitions."""
+    idx = min(bisect.bisect_right(starts, time_s) - 1, len(phases) - 1)
+    mode = phases[idx].mode
+    open_s, hold_s, pause_s = p.load_open_seconds, p.load_hold_seconds, p.load_pause_seconds
+    duration = 2 * open_s + hold_s + pause_s
+
+    active_start = None
+    for i, ph in enumerate(phases[:idx + 1]):
+        if ph.mode == '3.2' and (i == 0 or phases[i - 1].mode != '3.2'):
+            active_start = starts[i]
+    if active_start is None:
+        return 0.0
+
+    def active_load(delta):
+        phase_time = delta % duration
+        if phase_time < open_s:
+            return p.load_max_percent * phase_time / open_s
+        phase_time -= open_s
+        if phase_time < hold_s:
+            return p.load_max_percent
+        phase_time -= hold_s
+        if phase_time < open_s:
+            return p.load_max_percent * (1.0 - phase_time / open_s)
+        return 0.0
+
+    if mode == '3.2':
+        return active_load(max(0.0, time_s - active_start))
+
+    switched_off = None
+    for i, ph in enumerate(phases[:idx + 1]):
+        if ph.mode != '3.2' and (i == 0 or phases[i - 1].mode == '3.2'):
+            switched_off = starts[i]
+    if switched_off is None:
+        return 0.0
+    value_at_switch = active_load(max(0.0, switched_off - active_start))
+    return max(0.0, value_at_switch - p.load_max_percent * (time_s - switched_off) / open_s)
 
 
 def export_csv(path, samples):
@@ -764,13 +819,13 @@ def export_csv(path, samples):
         writer = csv.writer(stream, delimiter=';')
         voltage_enabled = any(s.voltage_v is not None for s in samples)
         writer.writerow(['time_s', 'time_min', 'time_h', 'temperature_C',
-                         'humidity_percent_RH', 'operation_mode', 'cycle', 'phase']+(['voltage_V'] if voltage_enabled else []))
+                         'humidity_percent_RH', 'operation_mode', 'cycle', 'phase', 'load_percent']+(['voltage_V'] if voltage_enabled else []))
         for s in samples:
             writer.writerow([f'{s.time_s:.9f}'.rstrip('0').rstrip('.'),
                              f'{s.time_s / 60:.9f}', f'{s.time_s / 3600:.9f}',
                              f'{s.temperature_c:.6f}',
                              ('n.def' if s.undefined_humidity_label else '') if s.humidity_rh is None else f'{s.humidity_rh:.6f}',
-                             s.operation_mode, s.cycle, s.phase]+(
+                             s.operation_mode, s.cycle, s.phase, f'{s.load_percent:.6f}']+(
                              ['' if s.voltage_v is None else f'{s.voltage_v:.6f}'] if voltage_enabled else []))
 
 
@@ -810,6 +865,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         except (ValueError, OSError) as exc:
             messagebox.showerror('Show Description', str(exc))
     ttk.Button(selector_row, text='Show Description', command=show_description).pack(side='left', padx=10)
+    load_enabled = tk.BooleanVar(value=False)
+    ttk.Checkbutton(selector_row, text='Load', variable=load_enabled, command=lambda: plot()).pack(side='left', padx=(0, 10))
     body = ttk.Frame(outer)
     body.pack(fill='both', expand=True)
     form_host = ttk.LabelFrame(body, text='Test Parameters')
@@ -878,7 +935,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     tracker_display = tk.Frame(view, background='white')
     tracker_display.pack(fill='x', pady=(8, 0))
     tracker_labels = []
-    for color in ('#111111', '#c24436', '#2672ad', '#389064'):
+    for color in ('#111111', '#c24436', '#2672ad', '#389064', '#d28a18'):
         label = tk.Label(tracker_display, text='', fg=color, bg='white', font=('Arial', 10, 'bold' if color == '#111111' else 'normal'))
         label.pack(side='left', padx=(0, 18))
         tracker_labels.append(label)
@@ -938,6 +995,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 args[key] = int(raw)
             else:
                 args[key] = float(raw)
+        args['load_close_seconds'] = args['load_open_seconds']
         visible = state['configuration']['tests'][selected.get()]['visible']
         if 'tracker_step_seconds' in visible:
             args['tracker_step_seconds'] = float(tracker_step.get().strip().replace(',', '.'))
@@ -966,7 +1024,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         s = state['timeline'].at(t)
         xx = left + (t-start)/(end-start)*(right-left)
         canvas.create_line(xx, top, xx, bottom, fill='#424b57', dash=(4, 3), width=1, tags='tracker')
-        for val, mapping in zip((s.temperature_c, s.humidity_rh, s.operation_mode, s.voltage_v), mappings):
+        tracker_values = (s.temperature_c, s.humidity_rh, s.operation_mode, s.voltage_v,
+                          s.load_percent if load_enabled.get() else None)
+        for val, mapping in zip(tracker_values, mappings):
             if val is None or mapping is None:
                 continue
             lo, hi, ytop, ybot, categories, color = mapping
@@ -979,6 +1039,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         tracker_labels[1].configure(text=f'Temperature: {s.temperature_c:.2f} °C')
         tracker_labels[2].configure(text=f'Relative Humidity: {humidity}')
         tracker_labels[3].configure(text=f'Mode: {s.operation_mode}{voltage}')
+        if load_enabled.get():
+            tracker_labels[4].configure(text=f'Load: {s.load_percent:.2f} %')
 
     def apply_tracker_step(event=None):
         try:
@@ -1109,6 +1171,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                   ('Operating Mode', '#389064')]
         if any(ph.voltage_v is not None for ph in timeline.phases):
             charts.append(('Voltage [V]', '#8957b0'))
+        if load_enabled.get():
+            charts.append(('Load [%]', '#d28a18'))
         band = (bottom-top)/len(charts)
         mappings = []
         for k, (label, color) in enumerate(charts):
@@ -1125,6 +1189,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                     return categories.index(ph.mode)
                 if k == 1:
                     return ph.humidity_rh
+                if label == 'Load [%]':
+                    return load_percent_at(timeline.phases, timeline.starts, t, timeline_parameters)
                 if k == 3:
                     return ph.voltage_v
                 f = (t-ph_start)/ph.duration_s
@@ -1135,12 +1201,16 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 nums = list(range(len(categories)))
             elif k == 1:
                 nums = [ph.humidity_rh for ph in timeline.phases if ph.humidity_rh is not None]
+            elif label == 'Load [%]':
+                nums = [timeline_parameters.load_axis_min_percent, timeline_parameters.load_axis_max_percent]
             elif k == 3:
                 nums = [ph.voltage_v for ph in timeline.phases if ph.voltage_v is not None]
             if k == 0:
                 lo, hi, tick_step = timeline_parameters.temperature_axis_min_c, timeline_parameters.temperature_axis_max_c, timeline_parameters.temperature_axis_step_c
             elif k == 1:
                 lo, hi, tick_step = timeline_parameters.humidity_axis_min_rh, timeline_parameters.humidity_axis_max_rh, timeline_parameters.humidity_axis_step_rh
+            elif label == 'Load [%]':
+                lo, hi, tick_step = timeline_parameters.load_axis_min_percent, timeline_parameters.load_axis_max_percent, timeline_parameters.load_axis_step_percent
             else:
                 lo, hi = (min(nums), max(nums)) if nums else (0, 100)
                 pad = 0.5 if categories else max((hi-lo)*0.08, 2)
@@ -1197,7 +1267,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             return False
         if phases != state.get('phases'):
             markers.clear()
-        state.update(p=p, phases=phases, samples=samples, timeline=Timeline(phases),
+        state.update(p=p, phases=phases, samples=samples, timeline=Timeline(phases, p),
                      tracker_step=p.tracker_step_seconds)
         if 'tracker_step_seconds' in state['configuration']['tests'][p.test_id]['visible']:
             step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')

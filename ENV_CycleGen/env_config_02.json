@@ -78,7 +78,11 @@
         "tracker_step_seconds": 60.0,
         "x_axis_unit": "Seconds",
         "x_axis_step_seconds": null,
-        "x_axis_end_seconds": null
+        "x_axis_end_seconds": null,
+        "ramps": false,
+        "start_temperature_c": 23.0,
+        "ramp_c_per_min": 1.0,
+        "ramp_mode": "3.1"
       },
       "unvisible": {
         "sample_seconds": 60.0,
