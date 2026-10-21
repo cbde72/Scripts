@@ -96,6 +96,12 @@ class Parameters:
     ub_voltage_v: float = 48.0
     precondition_minutes: float = 30.0
     activation_minutes: float = 10.0
+    temperature_axis_min_c: float = -50.0
+    temperature_axis_max_c: float = 100.0
+    temperature_axis_step_c: float = 10.0
+    humidity_axis_min_rh: float = 50.0
+    humidity_axis_max_rh: float = 100.0
+    humidity_axis_step_rh: float = 5.0
 
     def validate(self):
         if self.x_axis_unit not in TIME_UNITS:
@@ -203,6 +209,7 @@ class Phase:
     mode: str
     voltage_v: float | None = None
     undefined_humidity_label: str = ""
+    humidity_at_threshold: float | None = None
 
 
 @dataclass
@@ -407,14 +414,16 @@ def env002(p: Parameters) -> list[Phase]:
         for ph in climate_cycle(p, cycle, frost=cycle <= p.frost_cycles):
             a, b = ph.temperature_start_c, ph.temperature_end_c
             cuts = [0.0, 1.0]
-            if min(a, b) < 25.0 < max(a, b):
-                cuts.insert(1, (25.0-a)/(b-a))
+            if min(a, b) < p.room_temperature_c < max(a, b):
+                cuts.insert(1, (p.room_temperature_c-a)/(b-a))
             for u, v in zip(cuts, cuts[1:]):
                 ta, tb = a+u*(b-a), a+v*(b-a)
-                rh = None if (ta+tb)/2 < 25 else ph.humidity_rh
+                rh = None if (ta+tb)/2 < p.room_temperature_c else ph.humidity_rh
                 phases.append(replace(ph, duration_s=ph.duration_s*(v-u),
                     temperature_start_c=ta, temperature_end_c=tb,
-                    humidity_rh=rh, undefined_humidity_label='n.def.'))
+                    humidity_rh=rh,
+                    undefined_humidity_label='n.def.' if rh is None else '',
+                    humidity_at_threshold=p.rising_humidity_rh if rh is None and max(ta, tb) == p.room_temperature_c else None))
     return phases
 
 
@@ -494,7 +503,7 @@ TEST_KEYS = {
  'ENV_003': 'maximum_temperature_c room_temperature_c number_of_cycles rising_humidity_rh cooling_humidity_rh climate_check_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes',
 }
 # These are initial visibility choices, not hard-coded GUI constraints.
-HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v'.split())
+HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh'.split())
 SPECIAL_CONTROLS = {'tracker_step_seconds','x_axis_unit','x_axis_step_seconds','x_axis_end_seconds'}
 PARAMETER_LABELS = {
  'humidity_rh':'Default Relative Humidity [% RH]', 'sample_seconds':'CSV Time Step [s]',
@@ -644,7 +653,9 @@ class Timeline:
         ph = self.phases[idx]
         fraction = (t - self.starts[idx]) / ph.duration_s
         temperature = ph.temperature_start_c + fraction * (ph.temperature_end_c - ph.temperature_start_c)
-        rh = None if ph.undefined_humidity_label and temperature < 25 else ph.humidity_rh
+        at_threshold = (ph.humidity_at_threshold is not None
+                        and temperature == max(ph.temperature_start_c, ph.temperature_end_c))
+        rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
         return Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
                       ph.undefined_humidity_label if rh is None else '')
 
@@ -731,7 +742,9 @@ def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
         ph = phases[idx]
         fraction = min(1.0, max(0.0, (t - starts[idx]) / ph.duration_s))
         temperature = ph.temperature_start_c + fraction * (ph.temperature_end_c - ph.temperature_start_c)
-        rh = None if ph.undefined_humidity_label and temperature < 25 else ph.humidity_rh
+        at_threshold = (ph.humidity_at_threshold is not None
+                        and temperature == max(ph.temperature_start_c, ph.temperature_end_c))
+        rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
         samples.append(Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
                               ph.undefined_humidity_label if rh is None else ''))
     return phases, samples
@@ -824,8 +837,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     x_unit = tk.StringVar(value='Seconds')
     unit_choice = ttk.Combobox(controls, textvariable=x_unit, values=list(TIME_UNITS), state='readonly', width=10)
     unit_choice.pack(side='left', padx=6)
-    axis_controls = ttk.Frame(view)
-    axis_controls.pack(fill='x', pady=(0, 5))
+    axis_controls = ttk.Frame(controls)
+    axis_controls.pack(side='left', padx=(14, 0))
     x_step_label = tk.StringVar(value='X Start: 0 s   X Step [s]')
     x_step_widget_label = ttk.Label(axis_controls, textvariable=x_step_label)
     x_step_widget_label.pack(side='left')
@@ -842,8 +855,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     axis_apply_button.pack(side='left')
     axis_feedback = tk.StringVar(value='Blank = automatic. Chart time always starts at 0 s.')
     ttk.Label(view, textvariable=axis_feedback).pack(anchor='w', pady=(0, 4))
-    tracker_controls = ttk.Frame(view)
-    tracker_controls.pack(fill='x', pady=(0, 4))
+    tracker_controls = ttk.Frame(controls)
+    tracker_controls.pack(side='left', padx=(14, 0))
     tracker_label = ttk.Label(tracker_controls, text='Tracker Step [s]')
     tracker_label.pack(side='left')
     tracker_step = tk.StringVar(value='60')
@@ -856,9 +869,15 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     ttk.Label(view, textvariable=step_feedback).pack(anchor='w', pady=(0, 4))
     canvas = tk.Canvas(view, background='white', highlightthickness=1, highlightbackground='#d2d7dd')
     canvas.pack(fill='both', expand=True)
-    tracker_hint = 'Move the mouse over a chart to view all values.\n\n\n'
+    tracker_hint = 'Move the mouse over a chart to view all values.'
     tracker_text = tk.StringVar(value=tracker_hint)
-    ttk.Label(view, textvariable=tracker_text, font=('Arial', 10), justify='left').pack(anchor='w', pady=(8, 0))
+    tracker_display = tk.Frame(view, background='white')
+    tracker_display.pack(fill='x', pady=(8, 0))
+    tracker_labels = []
+    for color in ('#111111', '#c24436', '#2672ad', '#389064'):
+        label = tk.Label(tracker_display, text='', fg=color, bg='white', font=('Arial', 10, 'bold' if color == '#111111' else 'normal'))
+        label.pack(side='left', padx=(0, 18))
+        tracker_labels.append(label)
     marker_hint = 'Ctrl+Click: set M1. Click: set / move M2.\nTime difference is displayed in minutes.'
     marker_text = tk.StringVar(value=marker_hint)
     ttk.Label(view, textvariable=marker_text, font=('Arial', 10), justify='left').pack(anchor='w', pady=(5, 0))
@@ -866,8 +885,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     ttk.Label(view, textvariable=status, wraplength=650).pack(anchor='w', pady=8)
     source_note = tk.StringVar()
     ttk.Label(view, textvariable=source_note, wraplength=650, justify='left').pack(anchor='w')
-    ttk.Label(view, text='Setpoint profile; DUT temperature response is not simulated.\n'
-              'Blank Relative Humidity = unspecified. CSV always exports the complete profile.').pack(anchor='w', pady=(6, 0))
     state = {'recipes': {tid:parameters_from_configuration(configuration,tid) for tid in GENERATORS},
              'configuration':configuration, 'config_path':Path(config_path),
              'tracker_step':60.0, 'axis_unit':'Seconds'}
@@ -954,10 +971,10 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             canvas.create_oval(xx-4, yy-4, xx+4, yy+4, fill=color, outline='white', tags='tracker')
         humidity = (s.undefined_humidity_label or 'unspecified') if s.humidity_rh is None else f'{s.humidity_rh:.2f} % RH'
         voltage = '' if s.voltage_v is None else f'  |  Voltage: {s.voltage_v:.2f} V'
-        tracker_text.set(
-            f'Chart Time: {(s.time_s-start)/TIME_UNITS[x_unit.get()][0]:.2f} {TIME_UNITS[x_unit.get()][1]}  |  Profile Time: {s.time_s/3600:.4f} h\n'
-            f'Temperature: {s.temperature_c:.2f} °C  |  Relative Humidity: {humidity}\n'
-            f'Operating Mode: {s.operation_mode}{voltage}\nCycle: {s.cycle}  |  Phase: {s.phase}')
+        tracker_labels[0].configure(text=f'Time: {(s.time_s-start)/TIME_UNITS[x_unit.get()][0]:.2f} {TIME_UNITS[x_unit.get()][1]}')
+        tracker_labels[1].configure(text=f'Temperature: {s.temperature_c:.2f} °C')
+        tracker_labels[2].configure(text=f'Relative Humidity: {humidity}')
+        tracker_labels[3].configure(text=f'Mode: {s.operation_mode}{voltage}')
 
     def apply_tracker_step(event=None):
         try:
@@ -1044,6 +1061,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if 'timeline' not in state:
             return
         timeline = state['timeline']
+        timeline_parameters = state['p']
         try:
             axis_step, axis_end = read_axis()
         except (ValueError, OverflowError) as exc:
@@ -1115,12 +1133,17 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 nums = [ph.humidity_rh for ph in timeline.phases if ph.humidity_rh is not None]
             elif k == 3:
                 nums = [ph.voltage_v for ph in timeline.phases if ph.voltage_v is not None]
-            lo, hi = (min(nums), max(nums)) if nums else (0, 100)
-            pad = 0.5 if categories else max((hi-lo)*0.08, 2)
-            lo, hi = lo-pad, hi+pad
+            if k == 0:
+                lo, hi, tick_step = timeline_parameters.temperature_axis_min_c, timeline_parameters.temperature_axis_max_c, timeline_parameters.temperature_axis_step_c
+            elif k == 1:
+                lo, hi, tick_step = timeline_parameters.humidity_axis_min_rh, timeline_parameters.humidity_axis_max_rh, timeline_parameters.humidity_axis_step_rh
+            else:
+                lo, hi = (min(nums), max(nums)) if nums else (0, 100)
+                pad = 0.5 if categories else max((hi-lo)*0.08, 2)
+                lo, hi, tick_step = lo-pad, hi+pad, None
             mappings.append((lo, hi, ytop, ybot, categories, color))
             y = lambda v: ybot-(v-lo)/(hi-lo)*(ybot-ytop)
-            ticks = list(enumerate(categories)) if categories else [(lo, f'{lo:.1f}'), (hi, f'{hi:.1f}')]
+            ticks = list(enumerate(categories)) if categories else [(v, f'{v:g}') for v in ([lo + i*tick_step for i in range(round((hi-lo)/tick_step)+1)] if tick_step else [lo, hi])]
             for val, text in ticks:
                 canvas.create_text(left-7, y(val), text=text, anchor='e')
             previous = None
@@ -1146,17 +1169,18 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                                    fill='#c4c4c4', width=2, dash=(8, 3, 2, 3))
                 canvas.create_text((x(a)+x(b))/2, guide_y, text='n.def.',
                                    fill='#929292', anchor='s')
-            label_stride = max(1, math.ceil(len(tick_values)/8))
-            for j, local_t in enumerate(tick_values):
-                canvas.create_line(x(start+local_t), ybot, x(start+local_t), ybot+3, fill='#9aa3ad')
-                if j % label_stride == 0:
-                    canvas.create_text(x(start+local_t), ybot+12, text=f'{local_t/unit_factor:.6g} {unit_symbol}')
+        for j, local_t in enumerate(tick_values):
+            xx = x(start+local_t)
+            canvas.create_line(xx, top, xx, bottom, fill='#d5d9de', width=1)
+            canvas.create_line(xx, bottom, xx, bottom+4, fill='#7d8792')
+            if j % max(1, math.ceil(len(tick_values)/10)) == 0:
+                canvas.create_text(xx, bottom+12, text=f'{local_t/unit_factor:.6g} {unit_symbol}')
         state['geometry'] = (left, right, top, bottom, mappings, start, end)
         draw_markers()
         if 'cursor_fraction' in state:
             draw_tracker(state['cursor_fraction'])
 
-    def update():
+    def update(silent=False):
         if selected.get() not in GENERATORS:
             messagebox.showinfo('Test Unavailable', 'No cycle generator is registered for this Test ID.')
             return False
@@ -1164,7 +1188,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             p = read_parameters()
             phases, samples = generate(p)
         except (ValueError, TypeError, OverflowError) as exc:
-            messagebox.showerror('Check Test Parameters', str(exc))
+            if not silent:
+                messagebox.showerror('Check Test Parameters', str(exc))
             return False
         if phases != state.get('phases'):
             markers.clear()
@@ -1232,9 +1257,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             elif key == 'x_axis_unit': widget = ttk.Combobox(form,textvariable=var,state='readonly',values=list(TIME_UNITS))
             else: widget = ttk.Entry(form,textvariable=var,width=14)
             widget.grid(row=row,column=1,pady=5,sticky='ew')
+            if isinstance(widget, ttk.Entry):
+                widget.bind('<KeyRelease>', lambda event: update(silent=True))
             row += 1
-        ttk.Label(form,text='CSV Time Step: sampling interval for exported data.\nPhase boundaries are always included exactly.\nTracker Step controls only cursor snapping.',
-                  wraplength=390,justify='left').grid(row=row,column=0,columnspan=2,sticky='w',pady=12)
         form_canvas.yview_moveto(0)
         notes = {
           'ENV_004':'Chapter 6 / Section 2.1: 48-V component: UN 48 V, UA 48 V, Umin 36 V, Umax 52 V. Mode 3.1 uses UA. Ramps and UN are configurable; transition rate remains an explicit assumption.',
@@ -1317,8 +1342,11 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     canvas.bind('<Button-1>', place_marker)
     tracker_entry.bind('<Return>', apply_tracker_step)
     tracker_entry.bind('<FocusOut>', apply_tracker_step)
+    tracker_entry.bind('<KeyRelease>', lambda event: update(silent=True))
     x_step_entry.bind('<Return>', plot)
     x_end_entry.bind('<Return>', plot)
+    x_step_entry.bind('<KeyRelease>', lambda event: update(silent=True))
+    x_end_entry.bind('<KeyRelease>', lambda event: update(silent=True))
     root.after(100, switch_test)
     root.mainloop()
 

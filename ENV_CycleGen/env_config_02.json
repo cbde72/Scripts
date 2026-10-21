@@ -27,7 +27,13 @@
       },
       "unvisible": {
         "ub_voltage_v": 48.0,
-        "ramps": false
+        "ramps": false,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
       }
     },
     "ENV_026": {
@@ -50,7 +56,13 @@
 		"humidity_rh": 60.0,
         "active_mode": "3.2",
         "standby_mode": "3.1",
-		"sample_seconds": 60.0
+		"sample_seconds": 60.0,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 100.0,
+        "temperature_axis_step_c": 10.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
       }
     },
     "ENV_013": {
@@ -74,7 +86,14 @@
         "number_of_cycles": 870,
         "humidity_rh": 60.0,
         "active_mode": "3.2",
-        "standby_mode": "3.1"
+        "standby_mode": "3.1",
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
+
      }
     },
     "ENV_014": {
@@ -101,7 +120,13 @@
         "humidity_rh": 60.0,
         "active_mode": "3.2",
         "standby_mode": "3.1",
-        "sample_seconds": 60.0
+        "sample_seconds": 60.0,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
       }
     },
     "ENV_015": {
@@ -126,7 +151,13 @@
         "humidity_rh": 60.0,
         "active_mode": "3.2",
         "standby_mode": "3.1",
-        "sample_seconds": 60.0
+        "sample_seconds": 60.0,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
 		  
 	  }
     },
@@ -146,7 +177,13 @@
       "unvisible": {
 		 "active_mode": "3.2",
         "standby_mode": "2.1",
-        "sample_seconds": 60.0
+        "sample_seconds": 60.0,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
 	  }
     },
     "ENV_002": {
@@ -155,21 +192,22 @@
         "minimum_temperature_c": -10.0,
         "maximum_temperature_c": 65.0,
         "room_temperature_c": 25.0,
-        "number_of_cycles": 10,
-        "frost_cycles": 5,
-        "rising_humidity_rh": 93.0,
-        "cooling_humidity_rh": 80.0,
-        "climate_check_minutes": 1.0,
-        "humidity_rh": 60.0,
-        "active_mode": "3.2",
-        "standby_mode": "3.1",
-        "sample_seconds": 60.0,
         "tracker_step_seconds": 60.0,
         "x_axis_unit": "Seconds",
         "x_axis_step_seconds": null,
         "x_axis_end_seconds": null
       },
       "unvisible": {
+        "number_of_cycles": 10,
+        "frost_cycles": 5,
+        "rising_humidity_rh": 93.0,
+        "cooling_humidity_rh": 80.0,
+        "climate_check_minutes": 1.0,
+        "humidity_rh": 93.0,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60.0,
+
         "climate_rise_minutes": 90.0,
         "climate_hot_minutes": 240.0,
         "climate_fall_minutes": 90.0,
@@ -179,7 +217,13 @@
         "frost_cooling_minutes": 30.0,
         "frost_hold_minutes": 180.0,
         "frost_warming_minutes": 90.0,
-        "frost_posthold_minutes": 90.0
+        "frost_posthold_minutes": 90.0,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0
       }
     },
     "ENV_003": {
@@ -204,8 +248,13 @@
         "climate_rise_minutes": 120.0,
         "climate_hot_minutes": 45.0,
         "climate_fall_minutes": 90.0,
-        "climate_room_minutes": 45.0
-      }
+        "climate_room_minutes": 45.0,
+        "temperature_axis_min_c": -50.0,
+        "temperature_axis_max_c": 120.0,
+        "temperature_axis_step_c": 20.0,
+        "humidity_axis_min_rh": 50.0,
+        "humidity_axis_max_rh": 100.0,
+        "humidity_axis_step_rh": 5.0      }
     }
   }
 }
