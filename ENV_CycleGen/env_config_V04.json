@@ -1,0 +1,214 @@
+{
+  "schema_version": 4,
+  "source_document": "2.ENV_Test_Plan_Cp_r00v05(2).docx",
+  "global": {
+    "actuator": {
+      "load_start_delay_seconds": 1.0,
+      "load_open_seconds": 0.0,
+      "load_hold_seconds": 1.0,
+      "load_pause_seconds": 10.0,
+      "load_close_seconds": 0.0,
+      "load_max_percent": 100.0
+    },
+    "chart": {
+      "tracker_step_seconds": 60.0,
+      "x_axis_unit": "Seconds",
+      "x_axis_start_seconds": 0.0,
+      "x_axis_step_seconds": null,
+      "x_axis_end_seconds": null,
+      "temperature_axis_min_c": -50.0,
+      "temperature_axis_max_c": 100.0,
+      "temperature_axis_step_c": 20.0,
+      "humidity_axis_min_rh": 50.0,
+      "humidity_axis_max_rh": 100.0,
+      "humidity_axis_step_rh": 10,
+      "load_axis_min_percent": 0.0,
+      "load_axis_max_percent": 100.0,
+      "load_axis_step_percent": 10.0,
+      "voltage_axis_min_v": 30.0,
+      "voltage_axis_max_v": 60.0,
+      "voltage_axis_step_v": 5.0
+    },
+    "voltage": {
+      "minimum_voltage_v": 36.0,
+      "nominal_voltage_v": 48.0,
+      "ua_voltage_v": 48.0,
+      "ub_voltage_v": 48.0,
+      "maximum_voltage_v": 52.0,
+      "off_voltage_v": 0.0
+    }
+  },
+  "tests": {
+    "ENV_004": {
+      "name": "Five-Point Function/Performance Test",
+      "visible": {
+        "room_temperature_c": 23,
+        "minimum_temperature_c": -40,
+        "maximum_temperature_c": 80,
+        "precondition_minutes": 30,
+        "activation_minutes": 10,
+        "temperature_change_rate": 1,
+        "cycles": 1,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60
+      },
+      "unvisible": {
+        "ramps": false
+      }
+    },
+    "ENV_026": {
+      "name": "High Temperature Durability Test",
+      "visible": {
+        "temperature_c": 80,
+        "active_hours": 47,
+        "standby_hours": 1
+      },
+      "unvisible": {
+        "ramps": false,
+        "start_temperature_c": 23,
+        "ramp_c_per_min": 1,
+        "ramp_mode": "3.1",
+        "cycles": 1,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60
+      }
+    },
+    "ENV_013": {
+      "name": "Temperature Cycle Durability Test",
+      "visible": {
+        "minimum_temperature_c": -40,
+        "maximum_temperature_c": 80,
+        "room_temperature_c": 23,
+        "temperature_change_rate": 4,
+        "cold_dwell_minutes": 15,
+        "cold_active_minutes": 5,
+        "hot_dwell_minutes": 15,
+        "ramps": false
+      },
+      "unvisible": {
+        "start_temperature_c": 23,
+        "ramp_c_per_min": 1,
+        "ramp_mode": "3.1",
+        "sample_seconds": 60,
+        "hot_standby_minutes": 0,
+        "number_of_cycles": 870,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1"
+      }
+    },
+    "ENV_014": {
+      "name": "Temperature Cycling Test",
+      "visible": {
+        "minimum_temperature_c": -40,
+        "maximum_temperature_c": 80,
+        "room_temperature_c": 20,
+        "cold_check_duration_minutes": 1
+      },
+      "unvisible": {
+        "cooling_to_min_minutes": 60,
+        "cycling_cold_dwell_minutes": 90,
+        "warming_to_room_minutes": 60,
+        "warming_to_max_minutes": 90,
+        "cycling_hot_dwell_minutes": 110,
+        "cooling_to_room_minutes": 70,
+        "cold_check_start_minutes": 120,
+        "number_of_cycles": 30,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60
+      }
+    },
+    "ENV_015": {
+      "name": "Temperature Gradient Test",
+      "visible": {
+        "minimum_temperature_c": -40,
+        "maximum_temperature_c": 80,
+        "room_temperature_c": 25,
+        "gradient_step_c": 5,
+        "temperature_change_rate": 1,
+        "gradient_standby_minutes": 25
+      },
+      "unvisible": {
+        "gradient_umax_minutes": 1,
+        "gradient_pause_minutes": 3,
+        "gradient_umin_minutes": 1,
+        "number_of_cycles": 1,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60
+      }
+    },
+    "ENV_012": {
+      "name": "Steady-state Damp Heat Test",
+      "visible": {
+        "temperature_c": 65,
+        "total_hours": 504,
+        "inactive_hours": 47,
+        "functional_hours": 1,
+        "humidity_rh": 93
+      },
+      "unvisible": {
+        "active_mode": "3.2",
+        "standby_mode": "2.1",
+        "sample_seconds": 60
+      }
+    },
+    "ENV_002": {
+      "name": "Damp Heat Cycle 2 – Frost Test",
+      "visible": {
+        "minimum_temperature_c": -10,
+        "maximum_temperature_c": 65,
+        "room_temperature_c": 25
+      },
+      "unvisible": {
+        "number_of_cycles": 10,
+        "frost_cycles": 5,
+        "rising_humidity_rh": 93,
+        "cooling_humidity_rh": 80,
+        "climate_check_minutes": 1,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60,
+        "climate_rise_minutes": 90,
+        "climate_hot_minutes": 240,
+        "climate_fall_minutes": 90,
+        "climate_room_minutes": 60,
+        "climate_tail_minutes": 540,
+        "frost_prehold_minutes": 150,
+        "frost_cooling_minutes": 30,
+        "frost_hold_minutes": 180,
+        "frost_warming_minutes": 90,
+        "frost_posthold_minutes": 90
+      }
+    },
+    "ENV_003": {
+      "name": "Damp Heat Cycle 3 – Condensation Test",
+      "visible": {
+        "maximum_temperature_c": 80,
+        "room_temperature_c": 23,
+        "number_of_cycles": 5,
+        "rising_humidity_rh": 97.5,
+        "cooling_humidity_rh": 80,
+        "climate_check_minutes": 1,
+        "humidity_rh": 60,
+        "active_mode": "3.2",
+        "standby_mode": "3.1",
+        "sample_seconds": 60
+      },
+      "unvisible": {
+        "climate_rise_minutes": 120,
+        "climate_hot_minutes": 45,
+        "climate_fall_minutes": 90,
+        "climate_room_minutes": 45
+      }
+    }
+  }
+}

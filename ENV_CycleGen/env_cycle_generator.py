@@ -103,12 +103,14 @@ class Parameters:
     maximum_voltage_v: float = 52.0
     ua_voltage_v: float = 48.0
     ub_voltage_v: float = 48.0
+    off_voltage_v: float = 0.0
     precondition_minutes: float = 30.0
     activation_minutes: float = 10.0
     load_open_seconds: float = 10.0
     load_hold_seconds: float = 10.0
     load_pause_seconds: float = 5.0
     load_close_seconds: float = 10.0
+    load_start_delay_seconds: float = 1.0
     load_max_percent: float = 100.0
     load_axis_min_percent: float = 0.0
     load_axis_max_percent: float = 100.0
@@ -140,8 +142,11 @@ class Parameters:
             raise ValueError('Both operating durations must be greater than zero.')
         if self.sample_seconds <= 0:
             raise ValueError('Time step must be greater than zero.')
-        if self.load_open_seconds <= 0 or self.load_hold_seconds < 0 or self.load_pause_seconds < 0:
-            raise ValueError('Actuator opening time must be > 0; hold and pause times must be >= 0.')
+        if min(self.load_start_delay_seconds, self.load_open_seconds, self.load_hold_seconds,
+               self.load_close_seconds, self.load_pause_seconds) < 0:
+            raise ValueError('Actuator times must be greater than or equal to zero.')
+        if self.load_open_seconds + self.load_hold_seconds + self.load_close_seconds + self.load_pause_seconds <= 0:
+            raise ValueError('Actuator cycle duration must be greater than zero.')
         if self.tracker_step_seconds < 0:
             raise ValueError('Tracker Step must be zero (continuous) or greater than zero.')
         if isinstance(self.cycles, bool) or not isinstance(self.cycles, int) or not 1 <= self.cycles <= 10000:
@@ -518,19 +523,20 @@ def open_description(test_id):
 
 
 
-SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(1).docx'
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config.json')
+SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(2).docx'
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config_V04.json')
 COMMON_KEYS = 'humidity_rh active_mode standby_mode sample_seconds'.split()
-ACTUATOR_KEYS = 'load_open_seconds load_hold_seconds load_pause_seconds load_close_seconds load_max_percent'.split()
-ACTUATOR_VISIBLE_KEYS = 'load_open_seconds load_hold_seconds load_pause_seconds'.split()
+ACTUATOR_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_pause_seconds load_close_seconds load_max_percent'.split()
+ACTUATOR_VISIBLE_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_close_seconds load_pause_seconds'.split()
+VOLTAGE_KEYS = 'minimum_voltage_v nominal_voltage_v ua_voltage_v ub_voltage_v maximum_voltage_v off_voltage_v'.split()
 CHART_KEYS = ('tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step_seconds x_axis_end_seconds '
               'temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c '
               'humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh '
               'load_axis_min_percent load_axis_max_percent load_axis_step_percent '
               'voltage_axis_min_v voltage_axis_max_v voltage_axis_step_v').split()
-GLOBAL_KEYS = set(ACTUATOR_KEYS + CHART_KEYS)
+GLOBAL_KEYS = set(ACTUATOR_KEYS + CHART_KEYS + VOLTAGE_KEYS)
 TEST_KEYS = {
- 'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c nominal_voltage_v minimum_voltage_v maximum_voltage_v ua_voltage_v ub_voltage_v precondition_minutes activation_minutes temperature_change_rate cycles ramps',
+ 'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
  'ENV_013': 'minimum_temperature_c maximum_temperature_c room_temperature_c temperature_change_rate cold_dwell_minutes cold_active_minutes hot_dwell_minutes hot_standby_minutes number_of_cycles',
  'ENV_014': 'minimum_temperature_c maximum_temperature_c room_temperature_c cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes cold_check_duration_minutes number_of_cycles',
@@ -563,7 +569,8 @@ PARAMETER_LABELS = {
  'climate_check_minutes':'Function Check Duration [min]', 'frost_cycles':'Initial Frost Cycles',
  'cold_check_duration_minutes':'Cold Function Check Duration [min]',
  'load_open_seconds':'Actuator Opening Time [s]', 'load_hold_seconds':'Actuator Hold Time [s]',
- 'load_pause_seconds':'Actuator Pause Time [s]',
+ 'load_close_seconds':'Actuator Closing Time [s]', 'load_pause_seconds':'Actuator Pause Time [s]',
+ 'load_start_delay_seconds':'Actuator Start Delay [s]',
 }
 
 def parameter_label(key):
@@ -572,48 +579,53 @@ def parameter_label(key):
 
 def default_configuration():
     defaults = asdict(Parameters())
-    config = {'schema_version':3, 'source_document':SOURCE_DOCUMENT,
+    config = {'schema_version':4, 'source_document':SOURCE_DOCUMENT,
               'global': {'actuator': {key: defaults[key] for key in ACTUATOR_KEYS},
-                         'chart': {key: defaults[key] for key in CHART_KEYS}}, 'tests':{}}
+                         'chart': {key: defaults[key] for key in CHART_KEYS},
+                         'voltage': {key: defaults[key] for key in VOLTAGE_KEYS}}, 'tests':{}}
     for tid in GENERATORS:
         values = asdict(default_parameters(tid))
         keys = list(dict.fromkeys(TEST_KEYS[tid].split()+COMMON_KEYS))
         config['tests'][tid] = {'name':TEST_NAMES[tid],
             'visible':{key:values[key] for key in keys if key not in HIDDEN_KEYS},
-            'unvisible':{key:values[key] for key in keys if key in HIDDEN_KEYS},
-            'chart_overrides': {}}
+            'unvisible':{key:values[key] for key in keys if key in HIDDEN_KEYS}}
     return config
 
 
-def migrate_schema2(config):
-    """Convert schema 2 in memory, retaining every differing global value as an override."""
+def migrate_schema3(config):
+    """Convert conflict-free schema 3 data to schema 4."""
     import copy
-    if config.get('schema_version') != 2:
+    if config.get('schema_version') != 3:
         return config
+    conflicts = {tid: entry.get('chart_overrides', {}) for tid, entry in config.get('tests', {}).items()
+                 if entry.get('chart_overrides')}
+    if conflicts:
+        details = '; '.join(f'{tid}: {", ".join(sorted(values))}' for tid, values in conflicts.items())
+        raise ValueError('Schema-3 migration conflict in chart_overrides. Resolve explicitly before migration: '+details)
     migrated = copy.deepcopy(config)
-    base = default_configuration()
-    migrated['schema_version'] = 3
-    migrated['global'] = copy.deepcopy(base['global'])
-    global_values = {**migrated['global']['actuator'], **migrated['global']['chart']}
-    for tid, entry in migrated.get('tests', {}).items():
-        overrides = {}
-        for section in ('visible', 'unvisible'):
-            values = entry.get(section, {})
-            for key in list(values):
-                if key in GLOBAL_KEYS:
-                    value = values.pop(key)
-                    if value != global_values[key]:
-                        overrides[key] = value
-        entry['chart_overrides'] = overrides
+    defaults = default_configuration()['global']
+    migrated['schema_version'] = 4
+    for section in ('actuator', 'chart'):
+        for key, value in defaults[section].items():
+            migrated['global'][section].setdefault(key, value)
+    migrated['global']['voltage'] = copy.deepcopy(defaults['voltage'])
+    for entry in migrated.get('tests', {}).values():
+        entry.pop('chart_overrides', None)
     return migrated
 
 
 def parameters_from_configuration(config, test_id):
-    if config.get('schema_version') != 3 or not isinstance(config.get('tests'),dict):
-        raise ValueError('Expected a schema_version 3 overall configuration with global and tests sections.')
+    if config.get('schema_version') != 4 or not isinstance(config.get('tests'),dict):
+        raise ValueError('Expected a schema_version 4 overall configuration with global and tests sections.')
     global_config = config.get('global')
-    if not isinstance(global_config, dict) or not isinstance(global_config.get('actuator'), dict) or not isinstance(global_config.get('chart'), dict):
-        raise ValueError('Schema 3 requires global.actuator and global.chart objects.')
+    if (not isinstance(global_config, dict) or not isinstance(global_config.get('actuator'), dict)
+            or not isinstance(global_config.get('chart'), dict) or not isinstance(global_config.get('voltage'), dict)):
+        raise ValueError('Schema 4 requires global.actuator, global.chart and global.voltage objects.')
+    for section, expected in (('actuator', set(ACTUATOR_KEYS)), ('chart', set(CHART_KEYS)),
+                              ('voltage', set(VOLTAGE_KEYS))):
+        actual = set(global_config[section])
+        if actual != expected:
+            raise ValueError(f'global.{section} keys differ; missing={sorted(expected-actual)}, extra={sorted(actual-expected)}')
     if test_id not in config['tests']:
         raise ValueError('Configuration is missing '+test_id)
     entry = config['tests'][test_id]
@@ -622,11 +634,13 @@ def parameters_from_configuration(config, test_id):
     overlap = set(entry['visible']) & set(entry['unvisible'])
     if overlap:
         raise ValueError(test_id+': parameter appears in both sections: '+', '.join(sorted(overlap)))
-    overrides = entry.get('chart_overrides', {})
-    if not isinstance(overrides, dict) or any(key not in GLOBAL_KEYS for key in overrides):
-        raise ValueError(test_id+': chart_overrides contains an unsupported parameter.')
+    misplaced = (set(entry['visible']) | set(entry['unvisible'])) & GLOBAL_KEYS
+    if misplaced:
+        raise ValueError(test_id+': global parameters are not allowed in test sections: '+', '.join(sorted(misplaced)))
+    if 'chart_overrides' in entry:
+        raise ValueError(test_id+': chart_overrides are not allowed in schema 4.')
     values = asdict(default_parameters(test_id))
-    combined = {**global_config['actuator'], **global_config['chart'], **overrides,
+    combined = {**global_config['actuator'], **global_config['chart'], **global_config['voltage'],
                 **entry['unvisible'], **entry['visible']}
     for key, value in combined.items():
         if key not in values or key == 'test_id':
@@ -654,12 +668,12 @@ def parameters_from_configuration(config, test_id):
 def load_configuration(path=DEFAULT_CONFIG_PATH):
     path = Path(path)
     config = json.loads(path.read_text(encoding='utf-8-sig'))
-    if config.get('schema_version') == 2:
-        backup = path.with_name(path.stem+'.schema2.backup'+path.suffix)
+    if config.get('schema_version') == 3:
+        backup = path.with_name(path.stem+'.schema3.backup'+path.suffix)
         if not backup.exists():
             backup.write_bytes(path.read_bytes())
-        config = migrate_schema2(config)
-        temporary = path.with_name(path.name+'.schema3.tmp')
+        config = migrate_schema3(config)
+        temporary = path.with_name(path.name+'.schema4.tmp')
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
         temporary.replace(path)
     for tid in GENERATORS:
@@ -683,10 +697,9 @@ def save_current_test(path, parameters, entry_template=None, global_values=None)
         for key in entry[section]:
             entry[section][key] = values[key]
     global_values = values if global_values is None else global_values
-    for section in ('actuator','chart'):
+    for section in ('actuator','chart','voltage'):
         for key in config['global'][section]:
             config['global'][section][key] = global_values[key]
-    config['global']['actuator']['load_close_seconds'] = config['global']['actuator']['load_open_seconds']
     config['tests'][tid] = entry
     for key in GENERATORS:
         parameters_from_configuration(config,key)
@@ -829,11 +842,26 @@ class MeasurementMarkers:
 def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
     if test_id is not None:
         # Preserve support for the original explicit generate(p, test_id) API.
-        from dataclasses import replace
         p = replace(p, test_id=test_id)
     test_id = p.test_id
     p.validate()
     phases = GENERATORS[test_id](p)
+    normalized = []
+    for phase in phases:
+        voltage = phase.voltage_v
+        if voltage is None:
+            if test_id == 'ENV_015' and 'Umax' in phase.name:
+                voltage = p.maximum_voltage_v
+            elif test_id == 'ENV_015' and 'Umin' in phase.name:
+                voltage = p.minimum_voltage_v
+            elif phase.mode.startswith('3.'):
+                voltage = p.ua_voltage_v
+            elif phase.mode.startswith('2.'):
+                voltage = p.ub_voltage_v
+            else:
+                voltage = p.off_voltage_v
+        normalized.append(replace(phase, voltage_v=voltage))
+    phases = normalized
     starts, end = [], 0.0
     for phase in phases:
         starts.append(end)
@@ -865,8 +893,9 @@ def load_percent_at(phases, starts, time_s, p, schedule=None):
     """Return the trapezoidal load using a precomputed mode-change schedule."""
     idx = min(bisect.bisect_right(starts, time_s) - 1, len(phases) - 1)
     mode = phases[idx].mode
-    open_s, hold_s, pause_s = p.load_open_seconds, p.load_hold_seconds, p.load_pause_seconds
-    duration = 2 * open_s + hold_s + pause_s
+    delay_s, open_s = p.load_start_delay_seconds, p.load_open_seconds
+    hold_s, close_s, pause_s = p.load_hold_seconds, p.load_close_seconds, p.load_pause_seconds
+    duration = open_s + hold_s + close_s + pause_s
 
     schedule = schedule or build_load_schedule(phases, starts)
     active_start = schedule[0][idx]
@@ -874,15 +903,17 @@ def load_percent_at(phases, starts, time_s, p, schedule=None):
         return 0.0
 
     def active_load(delta):
-        phase_time = delta % duration
-        if phase_time < open_s:
+        if delta < delay_s:
+            return 0.0
+        phase_time = (delta-delay_s) % duration
+        if open_s > 0 and phase_time < open_s:
             return p.load_max_percent * phase_time / open_s
         phase_time -= open_s
         if phase_time < hold_s:
             return p.load_max_percent
         phase_time -= hold_s
-        if phase_time < open_s:
-            return p.load_max_percent * (1.0 - phase_time / open_s)
+        if close_s > 0 and phase_time < close_s:
+            return p.load_max_percent * (1.0 - phase_time / close_s)
         return 0.0
 
     if mode == '3.2':
@@ -892,7 +923,9 @@ def load_percent_at(phases, starts, time_s, p, schedule=None):
     if switched_off is None:
         return 0.0
     value_at_switch = active_load(max(0.0, switched_off - active_start))
-    return max(0.0, value_at_switch - p.load_max_percent * (time_s - switched_off) / open_s)
+    if close_s == 0:
+        return 0.0
+    return max(0.0, value_at_switch * (1.0 - (time_s - switched_off) / close_s))
 
 
 def export_csv(path, samples):
@@ -903,7 +936,7 @@ def export_csv(path, samples):
     """
     with Path(path).open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream, delimiter=';')
-        voltage_enabled = any(s.voltage_v is not None for s in samples)
+        voltage_enabled = True
         writer.writerow(['time_s', 'time_min', 'time_h', 'temperature_C',
                          'humidity_percent_RH', 'operation_mode', 'cycle', 'phase', 'load_percent']+(['voltage_V'] if voltage_enabled else []))
         for s in samples:
@@ -1041,7 +1074,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     state = {'recipes': {tid:parameters_from_configuration(configuration,tid) for tid in GENERATORS},
              'configuration':configuration, 'config_path':Path(config_path),
              'tracker_step':60.0, 'axis_unit':'Seconds',
-             'global_values': {**configuration['global']['actuator'], **configuration['global']['chart']}}
+             'global_values': {**configuration['global']['actuator'], **configuration['global']['chart'],
+                               **configuration['global']['voltage']}}
     markers = MeasurementMarkers()
     values = {}
     def read_axis():
@@ -1095,7 +1129,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 args[key] = int(raw)
             else:
                 args[key] = float(raw)
-        args['load_close_seconds'] = args['load_open_seconds']
         args['tracker_step_seconds'] = float(tracker_step.get().strip().replace(',', '.'))
         axis_start,axis_step,axis_end = read_axis()
         args['x_axis_start_seconds'] = axis_start
@@ -1106,8 +1139,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         for key in GLOBAL_KEYS - editable_global:
             args[key] = state['global_values'][key]
         global_values = {key: args[key] for key in GLOBAL_KEYS}
-        global_values['load_close_seconds'] = global_values['load_open_seconds']
-        args.update(state['configuration']['tests'][selected.get()].get('chart_overrides', {}))
         p = Parameters(**args)
         p.validate()
         state['global_values'].update(global_values)
@@ -1275,8 +1306,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         x = lambda t: left+(right-left)*(t-start)/(end-start)
         charts = [('Temperature [°C]', '#c24436'), ('Relative Humidity [% RH]', '#2672ad'),
                   ('Operating Mode', '#389064')]
-        if any(ph.voltage_v is not None for ph in timeline.phases):
-            charts.append(('Voltage [V]', '#8957b0'))
+        charts.append(('Voltage [V]', '#8957b0'))
         if load_enabled.get():
             charts.append(('Actuator Pos. [%]', '#d28a18'))
         band = (bottom-top)/len(charts)
@@ -1333,22 +1363,39 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             for a, b, ph, origin in segments:
                 points = [a, b]
                 if label == 'Actuator Pos. [%]':
-                    active_start = load_schedule[0][min(bisect.bisect_right(timeline.starts, origin)-1,
-                                                       len(timeline.phases)-1)]
-                    if active_start is not None:
-                        cycle_duration = (2 * timeline_parameters.load_open_seconds
+                    phase_index = min(bisect.bisect_right(timeline.starts, origin)-1,
+                                      len(timeline.phases)-1)
+                    active_start = load_schedule[0][phase_index]
+                    switched_off = load_schedule[1][phase_index]
+                    if active_start is not None and ph.mode == '3.2':
+                        cycle_duration = (timeline_parameters.load_open_seconds
                                           + timeline_parameters.load_hold_seconds
+                                          + timeline_parameters.load_close_seconds
                                           + timeline_parameters.load_pause_seconds)
-                        first_cycle = math.floor((a-active_start)/cycle_duration)
-                        last_cycle = math.ceil((b-active_start)/cycle_duration)
+                        repeated_start = active_start + timeline_parameters.load_start_delay_seconds
+                        first_cycle = math.floor((a-repeated_start)/cycle_duration)
+                        last_cycle = math.ceil((b-repeated_start)/cycle_duration)
+                        points.append(repeated_start)
                         for cycle_index in range(first_cycle, last_cycle + 1):
-                            base = active_start + cycle_index * cycle_duration
-                            points.extend(base + offset for offset in (
+                            base = repeated_start + cycle_index * cycle_duration
+                            cycle_points = [base + offset for offset in (
                                 0, timeline_parameters.load_open_seconds,
                                 timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds,
-                                2 * timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds,
-                                cycle_duration))
-                        points = sorted({max(a, min(b, point)) for point in points})
+                                timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds + timeline_parameters.load_close_seconds,
+                                cycle_duration)]
+                            points.extend(cycle_points)
+                            if timeline_parameters.load_open_seconds == 0:
+                                points.append(math.nextafter(base, -math.inf))
+                            if timeline_parameters.load_close_seconds == 0:
+                                close_at = base + timeline_parameters.load_hold_seconds
+                                points.append(math.nextafter(close_at, -math.inf))
+                        if timeline_parameters.load_close_seconds == 0 and b < timeline.duration_s:
+                            next_index = min(phase_index+1, len(timeline.phases)-1)
+                            if timeline.phases[next_index].mode != '3.2':
+                                points.append(math.nextafter(b, -math.inf))
+                    elif switched_off is not None:
+                        points.append(switched_off + timeline_parameters.load_close_seconds)
+                    points = sorted({max(a, min(b, point)) for point in points})
                 for point_a, point_b in zip(points, points[1:]):
                     va, vb = value(ph, point_a, origin), value(ph, point_b, origin)
                     if va is None or vb is None:
@@ -1518,7 +1565,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             config = load_configuration(path)
             recipes = {tid:parameters_from_configuration(config,tid) for tid in GENERATORS}
             state.update(configuration=config,recipes=recipes,config_path=Path(path),
-                         global_values={**config['global']['actuator'], **config['global']['chart']})
+                         global_values={**config['global']['actuator'], **config['global']['chart'],
+                                        **config['global']['voltage']})
             state.pop('form_test',None)
             switch_test()
         except (ValueError,TypeError,OSError) as exc:
