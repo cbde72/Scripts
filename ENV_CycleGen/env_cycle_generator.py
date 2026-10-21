@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ENV profile generator V2.1: temperature, humidity, Operating Mode and voltage profiles.
+"""ENV Cycle Generator V04: temperature, humidity, Operating Mode and voltage profiles.
 Python >=3.10, standard library only.
 Run without arguments for Tkinter, or --example output.csv for headless export.
 """
@@ -754,7 +754,7 @@ def load_configuration(path=DEFAULT_CONFIG_PATH):
     return config
 
 
-def save_current_test(path, parameters, entry_template=None, global_values=None):
+def save_current_test(path, parameters, entry_template=None, override_keys=None):
     """Read current disk contents; replace only the selected test's values.
 
     Other test sections, visibility membership, and unknown metadata are retained.
@@ -769,10 +769,10 @@ def save_current_test(path, parameters, entry_template=None, global_values=None)
     for section in ('visible','unvisible'):
         for key in entry[section]:
             entry[section][key] = values[key]
-    base_globals = flattened_global(config)
     overrides = dict(entry.get('overrides', {}))
+    override_keys = set() if override_keys is None else set(override_keys)
     for key in visible_global_keys(config):
-        if values[key] == base_globals[key]:
+        if key not in override_keys:
             overrides.pop(key, None)
         else:
             overrides[key] = values[key]
@@ -790,6 +790,30 @@ def save_current_test(path, parameters, entry_template=None, global_values=None)
             temporary = Path(stream.name)
             json.dump(config,stream,indent=2,ensure_ascii=False)
             stream.write('\n');stream.flush();os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None: temporary.unlink(missing_ok=True)
+    return config
+
+
+def save_global_settings(path, parameters):
+    """Save only GUI-visible global values; tests and visibility stay untouched."""
+    import os, tempfile
+    path = Path(path)
+    config = load_configuration(path) if path.exists() else default_configuration()
+    values = asdict(parameters)
+    for section in config['global'].values():
+        for key in section['visible']:
+            section['visible'][key] = values[key]
+    for tid in GENERATORS:
+        parameters_from_configuration(config, tid)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name+'.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(config, stream, indent=2, ensure_ascii=False)
+            stream.write('\n'); stream.flush(); os.fsync(stream.fileno())
         temporary.replace(path)
     finally:
         if temporary is not None: temporary.unlink(missing_ok=True)
@@ -829,6 +853,92 @@ def build_load_schedule(phases, starts):
     return active_starts, off_starts
 
 
+def active_load_percent(elapsed_s, p):
+    """Actuator position inside one uninterrupted Mode-3.2 interval."""
+    if elapsed_s < p.load_start_delay_seconds:
+        return 0.0
+    duration = (p.load_open_seconds + p.load_hold_seconds
+                + p.load_close_seconds + p.load_pause_seconds)
+    phase_time = (elapsed_s-p.load_start_delay_seconds) % duration
+    if p.load_open_seconds > 0 and phase_time < p.load_open_seconds:
+        return p.load_max_percent * phase_time / p.load_open_seconds
+    phase_time -= p.load_open_seconds
+    if phase_time < p.load_hold_seconds:
+        return p.load_max_percent
+    phase_time -= p.load_hold_seconds
+    if p.load_close_seconds > 0 and phase_time < p.load_close_seconds:
+        return p.load_max_percent * (1.0-phase_time/p.load_close_seconds)
+    return 0.0
+
+
+def load_before_active_exit(active_start, active_end, p):
+    """Position immediately before a right-continuous Mode-3.2 exit."""
+    elapsed = max(0.0, active_end-active_start)
+    if elapsed == 0:
+        return 0.0
+    return active_load_percent(math.nextafter(elapsed, -math.inf), p)
+
+
+def actuator_event_times(phases, starts, duration_s, p):
+    """Exact mode and actuator support points, including zero-duration jumps."""
+    events = set(starts)
+    events.add(duration_s)
+
+    def add(time_s, discontinuity=False, lower=0.0):
+        if lower <= time_s <= duration_s:
+            events.add(time_s)
+            if discontinuity and time_s > lower:
+                events.add(math.nextafter(time_s, -math.inf))
+            if len(events) > 15000000:
+                raise ValueError('Too many actuator events (maximum 150000000). Increase actuator cycle times.')
+
+    cycle_duration = (p.load_open_seconds + p.load_hold_seconds
+                      + p.load_close_seconds + p.load_pause_seconds)
+    i = 0
+    while i < len(phases):
+        if phases[i].mode != '3.2' or (i and phases[i-1].mode == '3.2'):
+            i += 1
+            continue
+        active_start = starts[i]
+        j = i + 1
+        while j < len(phases) and phases[j].mode == '3.2':
+            j += 1
+        active_end = starts[j] if j < len(starts) else duration_s
+        repeated_start = active_start + p.load_start_delay_seconds
+        add(active_start)
+        if repeated_start <= active_end:
+            opening_jump = (p.load_open_seconds == 0 and p.load_max_percent != 0
+                            and p.load_hold_seconds+p.load_close_seconds > 0)
+            closing_jump = (p.load_close_seconds == 0 and p.load_max_percent != 0
+                            and p.load_open_seconds+p.load_hold_seconds > 0)
+            add(repeated_start, opening_jump, active_start)
+
+            def add_while_active(time_s, discontinuity=False):
+                if time_s <= active_end:
+                    add(time_s, discontinuity, active_start)
+
+            base = repeated_start
+            while base <= active_end:
+                opening_end = base + p.load_open_seconds
+                hold_end = opening_end + p.load_hold_seconds
+                closing_end = hold_end + p.load_close_seconds
+                cycle_end = base + cycle_duration
+                add_while_active(base, opening_jump)
+                add_while_active(opening_end)
+                add_while_active(hold_end, closing_jump)
+                add_while_active(closing_end)
+                add_while_active(cycle_end)
+                base = cycle_end
+        exit_load = load_before_active_exit(active_start, active_end, p)
+        add(active_end, p.load_close_seconds == 0 and exit_load != 0, active_start)
+        if (active_end < duration_s and p.load_close_seconds > 0
+                and p.load_max_percent != 0 and exit_load != 0):
+            close_duration = p.load_close_seconds*abs(exit_load/p.load_max_percent)
+            add(min(duration_s, active_end+close_duration))
+        i = j
+    return sorted(events)
+
+
 class Timeline:
     """Exact cursor values independent of CSV sampling; new mode at boundaries."""
 
@@ -845,6 +955,8 @@ class Timeline:
             self.starts.append(self.duration_s)
             self.duration_s += phase.duration_s
         self.load_schedule = build_load_schedule(self.phases, self.starts)
+        self.actuator_events = (actuator_event_times(self.phases, self.starts, self.duration_s, parameters)
+                                if parameters else list(self.starts)+[self.duration_s])
 
     def at(self, time_s: float) -> Sample:
         if not math.isfinite(time_s):
@@ -942,30 +1054,18 @@ def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
                 voltage = p.off_voltage_v
         normalized.append(replace(phase, voltage_v=voltage))
     phases = normalized
-    starts, end = [], 0.0
-    for phase in phases:
-        starts.append(end)
-        end += phase.duration_s
+    timeline = Timeline(phases, p)
+    end = timeline.duration_s
     n = math.ceil(end / p.sample_seconds)
-    if n + len(starts) + 1 > 500000:
-        raise ValueError('Too many data points (maximum 500000). Increase the time step.')
-    # Include all boundaries, even if the sampling interval does not hit them.
-    # Deduplicate near-identical floats at ns precision, keeping exact events.
-    times = {round(i * p.sample_seconds, 9): i * p.sample_seconds for i in range(n)}
-    times.update({round(t, 9): t for t in starts + [end]})
-    samples = []
-    load_schedule = build_load_schedule(phases, starts)
-    for t in sorted(times.values()):
-        idx = min(bisect.bisect_right(starts, t) - 1, len(phases) - 1)
-        ph = phases[idx]
-        fraction = min(1.0, max(0.0, (t - starts[idx]) / ph.duration_s))
-        temperature = ph.temperature_start_c + fraction * (ph.temperature_end_c - ph.temperature_start_c)
-        at_threshold = (ph.humidity_at_threshold is not None
-                        and temperature == max(ph.temperature_start_c, ph.temperature_end_c))
-        rh = ph.humidity_at_threshold if at_threshold else (None if ph.undefined_humidity_label and temperature < max(ph.temperature_start_c, ph.temperature_end_c) else ph.humidity_rh)
-        samples.append(Sample(t, ph.cycle, ph.name, temperature, rh, ph.mode, ph.voltage_v,
-                              ph.undefined_humidity_label if rh is None else '',
-                              load_percent_at(phases, starts, t, p, load_schedule)))
+    if n > 22500000:
+        raise ValueError('Too many data points (maximum 22500000). Increase the time step.')
+    # Regular samples plus exact mode/actuator events. nextafter support points
+    # preserve both sides of an instantaneous zero-second transition.
+    times = {i * p.sample_seconds for i in range(n)}
+    times.update(timeline.actuator_events)
+    if len(times) > 25000000:
+        raise ValueError('Too many data points (maximum 25000000). Increase CSV Time Step or actuator cycle times.')
+    samples = [timeline.at(t) for t in sorted(times)]
     return phases, samples
 
 
@@ -973,39 +1073,42 @@ def load_percent_at(phases, starts, time_s, p, schedule=None):
     """Return the trapezoidal load using a precomputed mode-change schedule."""
     idx = min(bisect.bisect_right(starts, time_s) - 1, len(phases) - 1)
     mode = phases[idx].mode
-    delay_s, open_s = p.load_start_delay_seconds, p.load_open_seconds
-    hold_s, close_s, pause_s = p.load_hold_seconds, p.load_close_seconds, p.load_pause_seconds
-    duration = open_s + hold_s + close_s + pause_s
-
+    close_s = p.load_close_seconds
     schedule = schedule or build_load_schedule(phases, starts)
     active_start = schedule[0][idx]
     if active_start is None:
         return 0.0
 
-    def active_load(delta):
-        if delta < delay_s:
-            return 0.0
-        phase_time = (delta-delay_s) % duration
-        if open_s > 0 and phase_time < open_s:
-            return p.load_max_percent * phase_time / open_s
-        phase_time -= open_s
-        if phase_time < hold_s:
-            return p.load_max_percent
-        phase_time -= hold_s
-        if close_s > 0 and phase_time < close_s:
-            return p.load_max_percent * (1.0 - phase_time / close_s)
-        return 0.0
-
     if mode == '3.2':
-        return active_load(max(0.0, time_s - active_start))
+        return active_load_percent(max(0.0, time_s-active_start), p)
 
     switched_off = schedule[1][idx]
     if switched_off is None:
         return 0.0
-    value_at_switch = active_load(max(0.0, switched_off - active_start))
+    value_at_switch = load_before_active_exit(active_start, switched_off, p)
     if close_s == 0:
         return 0.0
-    return max(0.0, value_at_switch * (1.0 - (time_s - switched_off) / close_s))
+    closing_speed = abs(p.load_max_percent)/close_s
+    return max(0.0, value_at_switch-closing_speed*(time_s-switched_off))
+
+
+def actuator_motion_counts(samples, load_max_percent):
+    """Count rising and falling actuator movements over the complete profile."""
+    tolerance = max(1.0, abs(load_max_percent))*1e-12
+    openings = closings = direction = 0
+    previous = samples[0].load_percent if samples else 0.0
+    for sample in samples[1:]:
+        current = sample.load_percent
+        difference = current-previous
+        new_direction = 1 if difference > tolerance else (-1 if difference < -tolerance else 0)
+        if new_direction and new_direction != direction:
+            if new_direction > 0:
+                openings += 1
+            else:
+                closings += 1
+            direction = new_direction
+        previous = current
+    return openings, closings
 
 
 def export_csv(path, samples):
@@ -1018,9 +1121,9 @@ def export_csv(path, samples):
         writer = csv.writer(stream, delimiter=';')
         voltage_enabled = True
         writer.writerow(['time_s', 'time_min', 'time_h', 'temperature_C',
-                         'humidity_percent_RH', 'operation_mode', 'cycle', 'phase', 'load_percent']+(['voltage_V'] if voltage_enabled else []))
+                         'humidity_percent_RH', 'operation_mode', 'cycle', 'phase', 'actuator_position_percent']+(['voltage_V'] if voltage_enabled else []))
         for s in samples:
-            writer.writerow([f'{s.time_s:.9f}'.rstrip('0').rstrip('.'),
+            writer.writerow([format(s.time_s, '.17g'),
                              f'{s.time_s / 60:.9f}', f'{s.time_s / 3600:.9f}',
                              f'{s.temperature_c:.6f}',
                              ('n.def' if s.undefined_humidity_label else '') if s.humidity_rh is None else f'{s.humidity_rh:.6f}',
@@ -1033,7 +1136,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     from tkinter import filedialog, messagebox, ttk
 
     root = tk.Tk()
-    root.title('ENV Cycle Generator V2.1 · Temperature and Humidity Profiles')
+    root.title('ENV Cycle Generator V04 · Temperature and Humidity Profiles')
     root.geometry('1300x980')
     root.minsize(900, 650)
     root.after_idle(lambda: maximize_window(root))
@@ -1064,8 +1167,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         except (ValueError, OSError) as exc:
             messagebox.showerror('Show Description', str(exc))
     ttk.Button(selector_row, text='Show Description', command=show_description).pack(side='left', padx=10)
-    load_enabled = tk.BooleanVar(value=False)
-    ttk.Checkbutton(selector_row, text='Actuator Pos. [%]', variable=load_enabled, command=lambda: plot()).pack(side='left', padx=(0, 10))
     body = ttk.Frame(outer)
     body.pack(fill='both', expand=True)
     form_host = ttk.LabelFrame(body, text='Test Parameters')
@@ -1144,6 +1245,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         label = tk.Label(tracker_display, text='', fg=color, bg='white', font=('Arial', 10, 'bold' if color == '#111111' else 'normal'))
         label.pack(side='left', padx=(0, 18))
         tracker_labels.append(label)
+    actuator_count_text = tk.StringVar(value='Actuator Auf: 0  |  Zu: 0')
+    tk.Label(view, textvariable=actuator_count_text, foreground='#c00000',
+             font=('Arial', 20, 'bold')).pack(anchor='e', pady=(2, 4))
     marker_hint = 'Ctrl+Click: set M1. Click: set / move M2.\nTime difference is displayed in minutes.'
     marker_text = tk.StringVar(value=marker_hint)
     ttk.Label(view, textvariable=marker_text, font=('Arial', 10), justify='left').pack(anchor='w', pady=(5, 0))
@@ -1154,9 +1258,12 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     state = {'recipes': {tid:parameters_from_configuration(configuration,tid) for tid in GENERATORS},
              'configuration':configuration, 'config_path':Path(config_path),
              'tracker_step':60.0, 'axis_unit':'Seconds',
-             'global_values': flattened_global(configuration)}
+             'global_values': flattened_global(configuration),
+             'override_selections': {tid: set(configuration['tests'][tid].get('overrides', {}))
+                                     for tid in GENERATORS}}
     markers = MeasurementMarkers()
     values = {}
+    override_vars = {}
     def read_axis():
         def parse(var):
             text = var.get().strip().replace(',', '.')
@@ -1223,6 +1330,10 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         return p
 
     def hide_tracker(event=None):
+        pending = state.pop('tracker_motion_after_id', None)
+        if pending is not None:
+            root.after_cancel(pending)
+        state.pop('tracker_motion_fraction', None)
         canvas.delete('tracker')
         state.pop('cursor_fraction', None)
         tracker_text.set(tracker_hint)
@@ -1240,7 +1351,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         xx = left + (t-start)/(end-start)*(right-left)
         canvas.create_line(xx, top, xx, bottom, fill='#424b57', dash=(4, 3), width=1, tags='tracker')
         tracker_values = (s.temperature_c, s.humidity_rh, s.operation_mode, s.voltage_v,
-                          s.load_percent if load_enabled.get() else None)
+                          s.load_percent)
         for val, mapping in zip(tracker_values, mappings):
             if val is None or mapping is None:
                 continue
@@ -1254,10 +1365,12 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         tracker_labels[1].configure(text=f'Temperature: {s.temperature_c:.2f} °C')
         tracker_labels[2].configure(text=f'Relative Humidity: {humidity}')
         tracker_labels[3].configure(text=f'Mode: {s.operation_mode}{voltage}')
-        if load_enabled.get():
-            tracker_labels[4].configure(text=f'Actuator Pos.: {s.load_percent:.2f} %')
+        tracker_labels[4].configure(text=f'Actuator Pos.: {s.load_percent:.2f} %')
 
     def apply_tracker_step(event=None):
+        pending = state.pop('tracker_step_after_id', None)
+        if pending is not None:
+            root.after_cancel(pending)
         try:
             step = float(tracker_step.get().strip().replace(',', '.'))
             if not math.isfinite(step) or step < 0:
@@ -1270,6 +1383,17 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if 'cursor_fraction' in state:
             draw_tracker(state['cursor_fraction'])
         return True
+
+    def apply_tracker_step_later(event=None, delay=120):
+        pending = state.pop('tracker_step_after_id', None)
+        if pending is not None:
+            root.after_cancel(pending)
+
+        def apply_pending_step():
+            state.pop('tracker_step_after_id', None)
+            apply_tracker_step()
+
+        state['tracker_step_after_id'] = root.after(delay, apply_pending_step)
 
     def draw_markers():
         canvas.delete('markers')
@@ -1331,9 +1455,48 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if state['geometry'][5]+(event.x-left)/(right-left)*(state['geometry'][6]-state['geometry'][5]) > state['data_end']:
             hide_tracker()
             return
-        draw_tracker((event.x-left)/(right-left))
+        state['tracker_motion_fraction'] = (event.x-left)/(right-left)
+        if 'tracker_motion_after_id' not in state:
+            def draw_pending_tracker():
+                state.pop('tracker_motion_after_id', None)
+                fraction = state.pop('tracker_motion_fraction', None)
+                if fraction is not None:
+                    draw_tracker(fraction)
+            state['tracker_motion_after_id'] = root.after(16, draw_pending_tracker)
+
+    def decimate_polyline(points, pixel_width):
+        """Retain ordered extrema per pixel column for dense monotonic-x lines."""
+        if len(points) <= max(4, 2*pixel_width):
+            return points
+        reduced = []
+        bucket = []
+        column = None
+
+        def flush_bucket():
+            if not bucket:
+                return
+            indices = {0, len(bucket)-1}
+            indices.add(min(range(len(bucket)), key=lambda i: bucket[i][1]))
+            indices.add(max(range(len(bucket)), key=lambda i: bucket[i][1]))
+            for index in sorted(indices):
+                point = bucket[index]
+                if not reduced or point != reduced[-1]:
+                    reduced.append(point)
+
+        for point in points:
+            point_column = int(point[0])
+            if column is not None and point_column != column:
+                flush_bucket()
+                bucket.clear()
+            column = point_column
+            bucket.append(point)
+        flush_bucket()
+        return reduced
 
     def plot(event=None):
+        pending = state.pop('plot_after_id', None)
+        if pending is not None:
+            root.after_cancel(pending)
         if 'timeline' not in state:
             return
         timeline = state['timeline']
@@ -1376,17 +1539,24 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         unit_factor, unit_symbol = TIME_UNITS[x_unit.get()]
         axis_feedback.set(f'Time [{unit_symbol}], X Start {start/unit_factor:.6g}. Blank X End = profile end.' if tick_stride == 1 else
                           f'Time [{unit_symbol}]. Showing every {tick_stride}th X Step to keep labels readable.')
-        segments = [(max(t, start), min(t+ph.duration_s, data_end), ph, t)
-                    for t, ph in zip(timeline.starts, timeline.phases)
-                    if t < data_end and t+ph.duration_s > start]
+        first_phase = max(0, bisect.bisect_right(timeline.starts, start)-1)
+        last_phase = bisect.bisect_left(timeline.starts, data_end)
+        segments = []
+        for index in range(first_phase, min(last_phase+1, len(timeline.phases))):
+            origin = timeline.starts[index]
+            phase_end = (timeline.starts[index+1] if index+1 < len(timeline.starts)
+                         else timeline.duration_s)
+            if origin < data_end and phase_end > start:
+                segments.append((max(origin, start), min(phase_end, data_end),
+                                 timeline.phases[index], origin))
         width, height = max(canvas.winfo_width(), 400), max(canvas.winfo_height(), 300)
         left, right, top, bottom = 75, width-25, 30, height-30
         x = lambda t: left+(right-left)*(t-start)/(end-start)
         charts = [('Temperature [°C]', '#c24436'), ('Relative Humidity [% RH]', '#2672ad'),
                   ('Operating Mode', '#389064')]
         charts.append(('Voltage [V]', '#8957b0'))
-        if load_enabled.get():
-            charts.append(('Actuator Pos. [%]', '#d28a18'))
+        charts.append(('Actuator Pos. [%]', '#d28a18'))
+        mode_categories = sorted({ph.mode for ph in timeline.phases})
         band = (bottom-top)/len(charts)
         mappings = []
         for k, (label, color) in enumerate(charts):
@@ -1397,7 +1567,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 mappings.append(None)
                 canvas.create_text((left+right)/2, (ytop+ybot)/2, text='uncontrolled / unspecified', fill='#707780')
                 continue
-            categories = sorted({ph.mode for ph in timeline.phases}) if k == 2 else None
+            categories = mode_categories if k == 2 else None
             def value(ph, t, ph_start):
                 if k == 2:
                     return categories.index(ph.mode)
@@ -1409,16 +1579,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                     return ph.voltage_v
                 f = (t-ph_start)/ph.duration_s
                 return ph.temperature_start_c+f*(ph.temperature_end_c-ph.temperature_start_c)
-            nums = [value(ph, t, origin) for a, b, ph, origin in segments for t in (a, b)
-                    if value(ph, t, origin) is not None]
-            if k == 2:
-                nums = list(range(len(categories)))
-            elif k == 1:
-                nums = [ph.humidity_rh for ph in timeline.phases if ph.humidity_rh is not None]
-            elif label == 'Actuator Pos. [%]':
-                nums = [timeline_parameters.load_axis_min_percent, timeline_parameters.load_axis_max_percent]
-            elif label == 'Voltage [V]':
-                nums = [ph.voltage_v for ph in timeline.phases if ph.voltage_v is not None]
             if k == 0:
                 lo, hi, tick_step = timeline_parameters.temperature_axis_min_c, timeline_parameters.temperature_axis_max_c, timeline_parameters.temperature_axis_step_c
             elif k == 1:
@@ -1428,6 +1588,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             elif label == 'Voltage [V]':
                 lo, hi, tick_step = timeline_parameters.voltage_axis_min_v, timeline_parameters.voltage_axis_max_v, timeline_parameters.voltage_axis_step_v
             else:
+                nums = list(range(len(categories)))
                 lo, hi = (min(nums), max(nums)) if nums else (0, 100)
                 pad = 0.5 if categories else max((hi-lo)*0.08, 2)
                 lo, hi, tick_step = lo-pad, hi+pad, None
@@ -1438,42 +1599,21 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 canvas.create_text(left-7, y(val), text=text, anchor='e')
             previous = None
             undefined_spans = []
+            polylines = []
+            polyline = []
+
+            def finish_polyline():
+                nonlocal polyline
+                if len(polyline) >= 2:
+                    polylines.append(polyline)
+                polyline = []
+
             for a, b, ph, origin in segments:
                 points = [a, b]
                 if label == 'Actuator Pos. [%]':
-                    phase_index = min(bisect.bisect_right(timeline.starts, origin)-1,
-                                      len(timeline.phases)-1)
-                    active_start = load_schedule[0][phase_index]
-                    switched_off = load_schedule[1][phase_index]
-                    if active_start is not None and ph.mode == '3.2':
-                        cycle_duration = (timeline_parameters.load_open_seconds
-                                          + timeline_parameters.load_hold_seconds
-                                          + timeline_parameters.load_close_seconds
-                                          + timeline_parameters.load_pause_seconds)
-                        repeated_start = active_start + timeline_parameters.load_start_delay_seconds
-                        first_cycle = math.floor((a-repeated_start)/cycle_duration)
-                        last_cycle = math.ceil((b-repeated_start)/cycle_duration)
-                        points.append(repeated_start)
-                        for cycle_index in range(first_cycle, last_cycle + 1):
-                            base = repeated_start + cycle_index * cycle_duration
-                            cycle_points = [base + offset for offset in (
-                                0, timeline_parameters.load_open_seconds,
-                                timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds,
-                                timeline_parameters.load_open_seconds + timeline_parameters.load_hold_seconds + timeline_parameters.load_close_seconds,
-                                cycle_duration)]
-                            points.extend(cycle_points)
-                            if timeline_parameters.load_open_seconds == 0:
-                                points.append(math.nextafter(base, -math.inf))
-                            if timeline_parameters.load_close_seconds == 0:
-                                close_at = base + timeline_parameters.load_hold_seconds
-                                points.append(math.nextafter(close_at, -math.inf))
-                        if timeline_parameters.load_close_seconds == 0 and b < timeline.duration_s:
-                            next_index = min(phase_index+1, len(timeline.phases)-1)
-                            if timeline.phases[next_index].mode != '3.2':
-                                points.append(math.nextafter(b, -math.inf))
-                    elif switched_off is not None:
-                        points.append(switched_off + timeline_parameters.load_close_seconds)
-                    points = sorted({max(a, min(b, point)) for point in points})
+                    first = bisect.bisect_left(timeline.actuator_events, a)
+                    last = bisect.bisect_right(timeline.actuator_events, b)
+                    points = sorted(set(points + timeline.actuator_events[first:last]))
                 for point_a, point_b in zip(points, points[1:]):
                     va, vb = value(ph, point_a, origin), value(ph, point_b, origin)
                     if va is None or vb is None:
@@ -1482,12 +1622,22 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                                 undefined_spans[-1] = (undefined_spans[-1][0], point_b)
                             else:
                                 undefined_spans.append((point_a, point_b))
+                        finish_polyline()
                         previous = None
                         continue
-                    if previous is not None:
-                        canvas.create_line(x(point_a), y(previous), x(point_a), y(va), fill=color, width=2)
-                    canvas.create_line(x(point_a), y(va), x(point_b), y(vb), fill=color, width=2)
+                    # The preceding endpoint remains in the same polyline;
+                    # a changed va at the same x therefore draws the jump.
+                    polyline.append((x(point_a), y(va)))
+                    polyline.append((x(point_b), y(vb)))
                     previous = vb
+            finish_polyline()
+            dense = sum(map(len, polylines)) > 2*max(1, int(right-left))
+            for line_points in polylines:
+                if dense:
+                    line_points = decimate_polyline(line_points, max(1, int(right-left)))
+                if len(line_points) >= 2:
+                    coords = [coordinate for point in line_points for coordinate in point]
+                    canvas.create_line(*coords, fill=color, width=2)
             # Undefined guide is graphical only; it does not encode an RH value.
             for a, b in undefined_spans:
                 guide_y = (ytop+ybot)/2
@@ -1506,6 +1656,17 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if 'cursor_fraction' in state:
             draw_tracker(state['cursor_fraction'])
 
+    def plot_later(event=None, delay=120):
+        pending = state.pop('plot_after_id', None)
+        if pending is not None:
+            root.after_cancel(pending)
+
+        def plot_pending():
+            state.pop('plot_after_id', None)
+            plot()
+
+        state['plot_after_id'] = root.after(delay, plot_pending)
+
     def update(silent=False):
         if selected.get() not in GENERATORS:
             messagebox.showinfo('Test Unavailable', 'No cycle generator is registered for this Test ID.')
@@ -1519,8 +1680,11 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             return False
         if phases != state.get('phases'):
             markers.clear()
-        state.update(p=p, phases=phases, samples=samples, timeline=Timeline(phases, p),
+        timeline = Timeline(phases, p)
+        state.update(p=p, phases=phases, samples=samples, timeline=timeline,
                      tracker_step=p.tracker_step_seconds)
+        openings, closings = actuator_motion_counts(samples, p.load_max_percent)
+        actuator_count_text.set(f'Actuator Auf: {openings}  |  Zu: {closings}')
         step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
         state['recipes'][p.test_id] = p
         count = p.cycles if p.test_id in {'ENV_026', 'ENV_004'} else (max(ph.cycle for ph in phases) if p.test_id == 'ENV_012' else p.number_of_cycles)
@@ -1545,6 +1709,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def build_form(p):
         for widget in form.winfo_children(): widget.destroy()
         values.clear()
+        override_vars.clear()
         tracker_step.set(str(p.tracker_step_seconds))
         state['tracker_step'] = p.tracker_step_seconds
         x_unit.set(p.x_axis_unit)
@@ -1588,6 +1753,19 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             if isinstance(widget, ttk.Entry):
                 widget.bind('<KeyRelease>', lambda event: update(silent=True))
             row += 1
+        global_visible_order = visible_global_keys(state['configuration'])
+        if global_visible_order:
+            ttk.Separator(form, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=(10, 6))
+            row += 1
+            ttk.Label(form, text='Explicit Test Overrides').grid(row=row, column=0, columnspan=3, sticky='w')
+            row += 1
+            selected_overrides = state['override_selections'].setdefault(p.test_id, set())
+            for key in global_visible_order:
+                flag = tk.BooleanVar(value=key in selected_overrides)
+                override_vars[key] = flag
+                ttk.Checkbutton(form, text=parameter_label(key), variable=flag).grid(
+                    row=row, column=0, columnspan=3, sticky='w', pady=2)
+                row += 1
         form_canvas.yview_moveto(0)
         notes = {
           'ENV_004':'Chapter 6 / Section 2.1: 48-V component: UN 48 V, UA 48 V, Umin 36 V, Umax 52 V. Mode 3.1 uses UA. Ramps and UN are configurable; transition rate remains an explicit assumption.',
@@ -1606,6 +1784,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         # Preserve edits to the previous recipe when they are valid.
         previous = state.get('form_test')
         if previous in GENERATORS:
+            state['override_selections'][previous] = {key for key,var in override_vars.items() if var.get()}
             new_id = selected.get()
             selected.set(previous)
             try:
@@ -1636,10 +1815,30 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def save_config():
         if not update(): return
         try:
-            state['configuration'] = save_current_test(state['config_path'],state['p'])
+            selected_overrides = {key for key,var in override_vars.items() if var.get()}
+            state['configuration'] = save_current_test(state['config_path'],state['p'],
+                                                       override_keys=selected_overrides)
+            state['override_selections'][selected.get()] = selected_overrides
+            state['recipes'] = {tid:parameters_from_configuration(state['configuration'],tid)
+                                for tid in GENERATORS}
+            build_form(state['recipes'][selected.get()])
+            update()
             messagebox.showinfo('Save Current Test', selected.get()+' saved to '+str(state['config_path'])+'\nOther test sections were not changed.')
         except (ValueError,TypeError,OSError) as exc:
             messagebox.showerror('Save Failed',str(exc))
+
+    def save_global():
+        if not update(): return
+        try:
+            config = save_global_settings(state['config_path'], state['p'])
+            recipes = {tid:parameters_from_configuration(config,tid) for tid in GENERATORS}
+            state.update(configuration=config, recipes=recipes,
+                         global_values=flattened_global(config))
+            build_form(recipes[selected.get()])
+            update()
+            messagebox.showinfo('Save Global', 'Global settings saved to '+str(state['config_path']))
+        except (ValueError,TypeError,OSError) as exc:
+            messagebox.showerror('Save Global Failed',str(exc))
 
     def load_config():
         path = filedialog.askopenfilename(initialfile=state['config_path'].name,filetypes=[('Overall Configuration','*.json')])
@@ -1648,7 +1847,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             config = load_configuration(path)
             recipes = {tid:parameters_from_configuration(config,tid) for tid in GENERATORS}
             state.update(configuration=config,recipes=recipes,config_path=Path(path),
-                         global_values=flattened_global(config))
+                         global_values=flattened_global(config),
+                         override_selections={tid:set(config['tests'][tid].get('overrides', {}))
+                                              for tid in GENERATORS})
             state.pop('form_test',None)
             switch_test()
         except (ValueError,TypeError,OSError) as exc:
@@ -1657,7 +1858,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     buttons = ttk.Frame(outer)
     buttons.pack(fill='x', pady=(10, 0))
     for label, command in [('Generate Profile', update), ('Save CSV', export),
-                           ('Save Current Test', save_config), ('Load Configuration', load_config)]:
+                           ('Save Global', save_global), ('Save Current Test', save_config),
+                           ('Load Configuration', load_config)]:
         ttk.Button(buttons, text=label, command=command).pack(side='left', padx=(0, 8))
     selector.bind('<<ComboboxSelected>>', switch_test)
     chart_choice.bind('<<ComboboxSelected>>', plot)
@@ -1665,19 +1867,19 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     preview_spin.configure(command=plot)
     preview_spin.bind('<Return>', plot)
     preview_spin.bind('<FocusOut>', plot)
-    canvas.bind('<Configure>', plot)
+    canvas.bind('<Configure>', plot_later)
     canvas.bind('<Motion>', track_mouse)
     canvas.bind('<Leave>', hide_tracker)
     canvas.bind('<Button-1>', place_marker)
     tracker_entry.bind('<Return>', apply_tracker_step)
     tracker_entry.bind('<FocusOut>', apply_tracker_step)
-    tracker_entry.bind('<KeyRelease>', lambda event: update(silent=True))
+    tracker_entry.bind('<KeyRelease>', apply_tracker_step_later)
     x_step_entry.bind('<Return>', plot)
     x_end_entry.bind('<Return>', plot)
     x_start_entry.bind('<Return>', plot)
-    x_start_entry.bind('<KeyRelease>', plot)
-    x_step_entry.bind('<KeyRelease>', plot)
-    x_end_entry.bind('<KeyRelease>', plot)
+    x_start_entry.bind('<KeyRelease>', plot_later)
+    x_step_entry.bind('<KeyRelease>', plot_later)
+    x_end_entry.bind('<KeyRelease>', plot_later)
     root.after(100, switch_test)
     root.mainloop()
 
