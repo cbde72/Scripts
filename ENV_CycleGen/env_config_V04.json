@@ -3,10 +3,9 @@
   "source_document": "2.ENV_Test_Plan_Cp_r00v05(2).docx",
   "global": {
     "csv": {
-      "visible": {
-      },
+      "visible": {},
       "unvisible": {
-        "sample_seconds": 60.0
+        "sample_seconds": 1.0
       }
     },
     "actuator": {
@@ -90,6 +89,9 @@
         "humidity_rh": 60,
         "active_mode": "3.2",
         "standby_mode": "3.1"
+      },
+      "overrides": {
+        "x_axis_unit": "Hours"
       }
     },
     "ENV_013": {
