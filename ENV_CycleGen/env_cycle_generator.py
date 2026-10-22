@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
+import heapq
 import json
 import math
 from dataclasses import asdict, dataclass, replace
@@ -1031,7 +1032,12 @@ class MeasurementMarkers:
         return abs(self.end_s-self.start_s)/60
 
 
-def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
+MAX_REGULAR_SAMPLES = 22500000
+MAX_TOTAL_SAMPLES = 25000000
+
+
+def generate_phases(p: Parameters, test_id=None) -> tuple[list[Phase], Timeline]:
+    """Phases and timeline only (no Sample objects). Cheap enough for GUI updates."""
     if test_id is not None:
         # Preserve support for the original explicit generate(p, test_id) API.
         p = replace(p, test_id=test_id)
@@ -1054,18 +1060,59 @@ def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
                 voltage = p.off_voltage_v
         normalized.append(replace(phase, voltage_v=voltage))
     phases = normalized
-    timeline = Timeline(phases, p)
-    end = timeline.duration_s
-    n = math.ceil(end / p.sample_seconds)
-    if n > 22500000:
+    return phases, Timeline(phases, p)
+
+
+def regular_sample_count(timeline: Timeline, p: Parameters) -> int:
+    n = math.ceil(timeline.duration_s / p.sample_seconds)
+    if n > MAX_REGULAR_SAMPLES:
         raise ValueError('Too many data points (maximum 22500000). Increase the time step.')
-    # Regular samples plus exact mode/actuator events. nextafter support points
-    # preserve both sides of an instantaneous zero-second transition.
-    times = {i * p.sample_seconds for i in range(n)}
-    times.update(timeline.actuator_events)
-    if len(times) > 25000000:
+    return n
+
+
+def count_sample_points(timeline: Timeline, p: Parameters) -> int:
+    """Number of distinct sample times, without creating the times or Sample objects.
+
+    Equals len({i*sample_seconds for i in range(n)} | set(actuator_events)):
+    n regular points plus every event time that is not itself a regular point.
+    """
+    n = regular_sample_count(timeline, p)
+    step = p.sample_seconds
+    extra = 0
+    for event in timeline.actuator_events:
+        i = round(event / step)
+        if not (0 <= i < n and i * step == event):
+            extra += 1
+    total = n + extra
+    if total > MAX_TOTAL_SAMPLES:
         raise ValueError('Too many data points (maximum 25000000). Increase CSV Time Step or actuator cycle times.')
-    samples = [timeline.at(t) for t in sorted(times)]
+    return total
+
+
+def iter_sample_times(timeline: Timeline, p: Parameters):
+    """Sorted, de-duplicated sample times (regular grid + exact events), streamed."""
+    n = regular_sample_count(timeline, p)
+    step = p.sample_seconds
+    previous = None
+    for t in heapq.merge((i * step for i in range(n)), timeline.actuator_events):
+        if t != previous:
+            yield t
+            previous = t
+
+
+def iter_samples(timeline: Timeline, p: Parameters):
+    """Stream Sample objects (CSV export, CLI). Regular samples plus exact
+    mode/actuator events; nextafter support points keep both sides of an
+    instantaneous zero-second transition."""
+    count_sample_points(timeline, p)  # same limit checks as before, before any work
+    for t in iter_sample_times(timeline, p):
+        yield timeline.at(t)
+
+
+def generate(p: Parameters, test_id=None) -> tuple[list[Phase], list[Sample]]:
+    """Compatibility wrapper: phases plus the complete list of samples."""
+    phases, timeline = generate_phases(p, test_id)
+    samples = list(iter_samples(timeline, timeline.parameters))
     return phases, samples
 
 
@@ -1093,12 +1140,18 @@ def load_percent_at(phases, starts, time_s, p, schedule=None):
 
 
 def actuator_motion_counts(samples, load_max_percent):
-    """Count rising and falling actuator movements over the complete profile."""
+    """Count rising and falling actuator movements over the complete profile.
+
+    Accepts a list or any iterable of samples (e.g. iter_samples) and reads it once.
+    """
     tolerance = max(1.0, abs(load_max_percent))*1e-12
     openings = closings = direction = 0
-    previous = samples[0].load_percent if samples else 0.0
-    for sample in samples[1:]:
+    previous = None
+    for sample in samples:
         current = sample.load_percent
+        if previous is None:
+            previous = current
+            continue
         difference = current-previous
         new_direction = 1 if difference > tolerance else (-1 if difference < -tolerance else 0)
         if new_direction and new_direction != direction:
@@ -1109,6 +1162,123 @@ def actuator_motion_counts(samples, load_max_percent):
             direction = new_direction
         previous = current
     return openings, closings
+
+
+PERIODIC_WARMUP_CYCLES = 2
+
+
+def periodic_skip_plan(timeline, p):
+    """Find runs of identical actuator cycles inside Mode-3.2 intervals.
+
+    Returns {index_before_probe_cycle: (index_after_probe_cycle, jump_to_index, skipped_cycles)}
+    with indexes into timeline.actuator_events. Cycles after the warm-up cycles and
+    before the last warm-up cycles are only skipped after the counting loop has verified
+    that two consecutive cycles change the state identically (see below).
+    """
+    cycle = (p.load_open_seconds + p.load_hold_seconds
+             + p.load_close_seconds + p.load_pause_seconds)
+    if cycle <= 0 or not math.isfinite(cycle):
+        return {}
+    phases, starts, events = timeline.phases, timeline.starts, timeline.actuator_events
+    duration = timeline.duration_s
+    plan = {}
+    k = PERIODIC_WARMUP_CYCLES
+    i = 0
+    while i < len(phases):
+        if phases[i].mode != '3.2' or (i and phases[i-1].mode == '3.2'):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(phases) and phases[j].mode == '3.2':
+            j += 1
+        active_end = starts[j] if j < len(starts) else duration
+        base = starts[i] + p.load_start_delay_seconds
+        bases = []
+        while base <= active_end:     # same accumulation as actuator_event_times()
+            bases.append(base)
+            base = base + cycle
+            if len(bases) > 20000000:
+                return {}
+        count = len(bases)
+        if count >= 2*k + 4:
+            # probe = cycle k+1; skipped cycles = k+2 ... count-k-1
+            positions = [bisect.bisect_left(events, bases[n]) for n in (k+1, k+2, count-k)]
+            if all(pos < len(events) and events[pos] == bases[n]
+                   for pos, n in zip(positions, (k+1, k+2, count-k))):
+                skipped = count - 2*k - 2
+                plan[positions[0]] = (positions[1], positions[2], skipped)
+        i = j
+    return plan
+
+
+def actuator_motion_counts_from_timeline(timeline, p, skip_periodic=True):
+    """Same result as actuator_motion_counts(samples, ...), evaluated only at the exact
+    event times (the load is piecewise linear between events, so the sequence of
+    rising/falling directions is identical).
+
+    With skip_periodic, long runs of identical actuator cycles are counted by
+    multiplication: two consecutive probe cycles are evaluated exactly; only if they
+    leave the counting state unchanged (same direction and load level, same number of
+    openings/closings) are the cycles in between skipped. Otherwise nothing is skipped.
+    """
+    tolerance = max(1.0, abs(p.load_max_percent))*1e-12
+    phases, starts, schedule = timeline.phases, timeline.starts, timeline.load_schedule
+    events, duration = timeline.actuator_events, timeline.duration_s
+    plan = periodic_skip_plan(timeline, p) if skip_periodic else {}
+    probe_end = {value[0]: (key, value) for key, value in plan.items()}
+    openings = closings = direction = 0
+    previous = None
+    snapshots = {}
+    n = len(events)
+    i = 0
+    while i < n:
+        if i in plan:
+            snapshots[i] = (openings, closings, direction, previous)
+        if i in probe_end:
+            start_index, (_, jump_to, skipped) = probe_end[i]
+            before = snapshots.pop(start_index, None)
+            if before is not None:
+                d_open, d_close = openings-before[0], closings-before[1]
+                same_state = (direction == before[2] and previous is not None and before[3] is not None
+                              and abs(previous-before[3]) <= tolerance)
+                if same_state:
+                    openings += skipped*d_open
+                    closings += skipped*d_close
+                    i = jump_to
+                    continue
+        t = events[i]
+        current = load_percent_at(phases, starts, min(duration, max(0.0, t)), p, schedule)
+        if previous is not None:
+            difference = current-previous
+            new_direction = 1 if difference > tolerance else (-1 if difference < -tolerance else 0)
+            if new_direction and new_direction != direction:
+                if new_direction > 0:
+                    openings += 1
+                else:
+                    closings += 1
+                direction = new_direction
+        previous = current
+        i += 1
+    return openings, closings
+
+
+def event_counting_is_exact(p):
+    """True where evaluating the load at the exact event times reproduces the
+    sample-based count: non-negative maximum and actuator times that are multiples
+    of 1/64 s (exactly representable, so cycle boundaries carry no rounding noise).
+    Outside this domain the count of the sample-based method itself depends on
+    floating-point noise and on the CSV time step, so it is kept as the reference."""
+    times = (p.load_start_delay_seconds, p.load_open_seconds, p.load_hold_seconds,
+             p.load_close_seconds, p.load_pause_seconds)
+    return p.load_max_percent >= 0 and all(t*64 == round(t*64) for t in times)
+
+
+def actuator_counts(timeline, p):
+    """(openings, closings) for the GUI. Fast event-based count where it is exact,
+    otherwise the original sample-based count, streamed without storing samples."""
+    if event_counting_is_exact(p):
+        return actuator_motion_counts_from_timeline(timeline, p)
+    return actuator_motion_counts(iter_samples(timeline, p), p.load_max_percent)
 
 
 def export_csv(path, samples):
@@ -1668,31 +1838,34 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         state['plot_after_id'] = root.after(delay, plot_pending)
 
     def update(silent=False):
+        pending_update = state.pop('update_after_id', None)
+        if pending_update is not None:
+            root.after_cancel(pending_update)
         if selected.get() not in GENERATORS:
             messagebox.showinfo('Test Unavailable', 'No cycle generator is registered for this Test ID.')
             return False
         try:
             p = read_parameters()
-            phases, samples = generate(p)
+            phases, timeline = generate_phases(p)
+            point_count = count_sample_points(timeline, p)
         except (ValueError, TypeError, OverflowError) as exc:
             if not silent:
                 messagebox.showerror('Check Test Parameters', str(exc))
             return False
         if phases != state.get('phases'):
             markers.clear()
-        timeline = Timeline(phases, p)
-        state.update(p=p, phases=phases, samples=samples, timeline=timeline,
+        state.update(p=p, phases=phases, timeline=timeline,
                      tracker_step=p.tracker_step_seconds)
-        openings, closings = actuator_motion_counts(samples, p.load_max_percent)
+        openings, closings = actuator_counts(timeline, p)
         actuator_count_text.set(f'Actuator Auf: {openings}  |  Zu: {closings}')
         step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
         state['recipes'][p.test_id] = p
         count = p.cycles if p.test_id in {'ENV_026', 'ENV_004'} else (max(ph.cycle for ph in phases) if p.test_id == 'ENV_012' else p.number_of_cycles)
-        message = f'Total Duration: {samples[-1].time_s/3600:.3f} h · {len(samples)} Data Points · {count} Cycle(s)'
+        message = f'Total Duration: {timeline.duration_s/3600:.3f} h · {point_count} Data Points · {count} Cycle(s)'
         if p.test_id not in {'ENV_026', 'ENV_012'}:
-            per_cycle = samples[-1].time_s/count/60
+            per_cycle = timeline.duration_s/count/60
             duration_label = 'Average Cycle Duration' if p.test_id == 'ENV_004' and p.cycles > 1 and not p.ramps else 'Cycle Duration'
-            message += f'\n{duration_label}: {per_cycle:.3f} min · {samples[-1].time_s/86400:.3f} days total'
+            message += f'\n{duration_label}: {per_cycle:.3f} min · {timeline.duration_s/86400:.3f} days total'
             if p.test_id == 'ENV_013' and not 3 <= p.temperature_change_rate <= 4:
                 message += '\nNote: plan specifies 4 °C/min, reducible to a minimum of 3 °C/min.'
         if p.test_id not in {'ENV_012', 'ENV_002', 'ENV_003', 'ENV_004'} and p.humidity_rh is not None and not 45 <= p.humidity_rh <= 75:
@@ -1706,7 +1879,38 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         plot()
         return True
 
+    # Keys that do not change an Entry's text must not trigger a recalculation.
+    non_editing_keys = {'Tab', 'ISO_Left_Tab', 'Shift_L', 'Shift_R', 'Control_L', 'Control_R',
+                        'Alt_L', 'Alt_R', 'Caps_Lock', 'Left', 'Right', 'Up', 'Down', 'Home',
+                        'End', 'Prior', 'Next', 'Escape', 'Return', 'KP_Enter'}
+
+    def update_later(event=None, delay=500):
+        """Debounce form edits: recalculate once after typing has paused."""
+        if event is not None and getattr(event, 'keysym', '') in non_editing_keys:
+            return
+        pending = state.pop('update_after_id', None)
+        if pending is not None:
+            root.after_cancel(pending)
+
+        def update_pending():
+            state.pop('update_after_id', None)
+            update(silent=True)
+
+        state['update_after_id'] = root.after(delay, update_pending)
+
+    def update_now(event=None):
+        """Return key: recalculate immediately (cancels a pending debounced run)."""
+        update(silent=True)
+
+    def flush_pending_update(event=None):
+        """Focus leaves a field: run a still-pending debounced update right away."""
+        if state.get('update_after_id') is not None:
+            update(silent=True)
+
     def build_form(p):
+        pending_update = state.pop('update_after_id', None)
+        if pending_update is not None:
+            root.after_cancel(pending_update)
         for widget in form.winfo_children(): widget.destroy()
         values.clear()
         override_vars.clear()
@@ -1751,7 +1955,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             else: widget = ttk.Entry(form,textvariable=var,width=14)
             widget.grid(row=row,column=1,pady=5,sticky='ew')
             if isinstance(widget, ttk.Entry):
-                widget.bind('<KeyRelease>', lambda event: update(silent=True))
+                widget.bind('<KeyRelease>', update_later)
+                widget.bind('<Return>', update_now)
+                widget.bind('<FocusOut>', flush_pending_update)
             row += 1
         global_visible_order = visible_global_keys(state['configuration'])
         if global_visible_order:
@@ -1807,7 +2013,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                                           filetypes=[('CSV', '*.csv')])
         if path:
             try:
-                export_csv(path, state['samples'])
+                export_csv(path, iter_samples(state['timeline'], state['p']))
                 messagebox.showinfo('Export', f'CSV saved:\n{path}')
             except OSError as exc:
                 messagebox.showerror('Export Failed', str(exc))
@@ -1894,9 +2100,10 @@ def main():
     if args.example:
         config = load_configuration(config_path) if config_path.exists() else default_configuration()
         p = parameters_from_configuration(config,args.test or 'ENV_026')
-        _,samples = generate(p)
-        export_csv(args.example,samples)
-        print(f'{args.example}: {len(samples)} Points, {samples[-1].time_s/3600:g} Hours')
+        _, timeline = generate_phases(p)
+        point_count = count_sample_points(timeline, p)
+        export_csv(args.example, iter_samples(timeline, p))
+        print(f'{args.example}: {point_count} Points, {timeline.duration_s/3600:g} Hours')
     else:
         launch_gui(config_path)
 
