@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """ENV Cycle Generator V04: temperature, humidity, Operating Mode and voltage profiles.
 Python >=3.10, standard library only.
-Run without arguments for Tkinter, or --example output.csv for headless export.
+Run without arguments for Tkinter, --example output.csv for the full headless
+export, --cycle1 cycle1.csv for the first-cycle Excel XY breakpoint table, or
+--breakpoints points.csv for the exact phase-derived breakpoint export.
 """
 from __future__ import annotations
 import argparse
@@ -472,7 +474,7 @@ def env004(p: Parameters) -> list[Phase]:
     """Five checks from Chapter 6; ramp rate and UN are explicit recipe assumptions."""
     p.validate()
     inactive_voltage = (p.ua_voltage_v if p.standby_mode.startswith('3.') else
-                        p.ub_voltage_v if p.standby_mode.startswith('2.') else 0.0)
+                        p.ub_voltage_v if p.standby_mode.startswith('2.') else p.off_voltage_v)
     phases = []
     for cycle in range(1, p.cycles+1):
         def add(name, minutes, ta, tb, mode, voltage):
@@ -1301,6 +1303,773 @@ def export_csv(path, samples):
                              ['' if s.voltage_v is None else f'{s.voltage_v:.6f}'] if voltage_enabled else []))
 
 
+def export_cycle1_csv(path, timeline, parameters, step_epsilon=1e-6):
+    """Export the first cycle as an Excel-ready XY breakpoint table.
+
+    The file contains only polyline vertices, written as adjacent x/y column
+    pairs for temperature, humidity, operation mode, voltage and actuator
+    position. Duplicate x values encode vertical step edges, so an Excel XY
+    scatter/line chart reproduces the generator curve without metadata columns.
+
+    `step_epsilon` is retained for API compatibility and is no longer needed.
+    """
+    return _export_cycle1_xy_table(path, timeline, parameters)
+
+
+def _same_number(a, b):
+    if a is None or b is None:
+        return a is b
+    try:
+        return math.isclose(float(a), float(b), rel_tol=0.0, abs_tol=1e-9)
+    except (TypeError, ValueError):
+        return a == b
+
+
+def _same_value(a, b):
+    if isinstance(a, str) or isinstance(b, str):
+        return a == b
+    return _same_number(a, b)
+
+
+def _same_time(a, b):
+    return _same_number(a, b)
+
+
+def _humidity_note(value, label):
+    if value is not None:
+        return ''
+    return label or 'undefined'
+
+
+def _phase_equivalent(a, b):
+    return (
+        a.name == b.name
+        and _same_number(a.duration_s, b.duration_s)
+        and _same_number(a.temperature_start_c, b.temperature_start_c)
+        and _same_number(a.temperature_end_c, b.temperature_end_c)
+        and _same_number(a.humidity_rh, b.humidity_rh)
+        and a.mode == b.mode
+        and _same_number(a.voltage_v, b.voltage_v)
+        and a.undefined_humidity_label == b.undefined_humidity_label
+        and _same_number(a.humidity_at_threshold, b.humidity_at_threshold)
+    )
+
+
+def _select_cycle_indices(phases, timeline, cycle):
+    """(indices, first absolute time, cycle override, repeat information)."""
+    available = sorted({phase.cycle for phase in phases})
+    if cycle is None:
+        return list(range(len(phases))), 0.0, None, None
+    if cycle == 'first_plus_repeat':
+        if 1 not in available:
+            raise ValueError(f'Cycle 1 not found. Available cycles: {available}.')
+        by_cycle = {}
+        for phase in phases:
+            by_cycle.setdefault(phase.cycle, []).append(phase)
+        base = by_cycle[1]
+        for number in available:
+            sequence = by_cycle[number]
+            if (len(sequence) != len(base)
+                    or any(not _phase_equivalent(a, b) for a, b in zip(base, sequence))):
+                raise ValueError(
+                    'first_plus_repeat requires identical phase sequences for all cycles; '
+                    f'cycle {number} differs from cycle 1.')
+        indices = [i for i, phase in enumerate(phases) if phase.cycle == 1]
+        duration_s = sum(phase.duration_s for phase in base)
+        repeat = {
+            'cycles_total': len(available),
+            'remaining': max(0, len(available) - 1),
+            'cycle_duration_s': duration_s,
+        }
+        return indices, timeline.starts[indices[0]], 1, repeat
+    if isinstance(cycle, bool) or not isinstance(cycle, int):
+        raise ValueError("cycle must be None, an integer, or 'first_plus_repeat'.")
+    indices = [i for i, phase in enumerate(phases) if phase.cycle == cycle]
+    if not indices:
+        raise ValueError(f'Cycle {cycle} not found. Available cycles: {available}.')
+    return indices, timeline.starts[indices[0]], cycle, None
+
+
+def _temperature_breakpoints_for_indices(phases, timeline, indices, offset, cycle_override):
+    raw = []
+    for index in indices:
+        phase = phases[index]
+        start_s = timeline.starts[index]
+        end_s = start_s + phase.duration_s
+        raw.append((start_s, phase.temperature_start_c, phase.cycle))
+        raw.append((end_s, phase.temperature_end_c, phase.cycle))
+
+    cleaned = []
+    for time_s, value, number in raw:
+        if (cleaned and _same_time(time_s, cleaned[-1][0])
+                and _same_value(value, cleaned[-1][1])):
+            cleaned[-1] = (time_s, value, number)
+        else:
+            cleaned.append((time_s, value, number))
+
+    kept = []
+    for i, (time_s, value, number) in enumerate(cleaned):
+        keep = i == 0 or i == len(cleaned) - 1
+        if not keep:
+            before, after = cleaned[i - 1], cleaned[i + 1]
+            if _same_time(time_s, before[0]) or _same_time(time_s, after[0]):
+                keep = True
+            else:
+                slope_before = (value - before[1]) / (time_s - before[0])
+                slope_after = (after[1] - value) / (after[0] - time_s)
+                keep = abs(slope_before - slope_after) > 1e-12
+        if keep:
+            kept.append((time_s, value, number))
+
+    points = []
+    for i, (time_s, value, number) in enumerate(kept):
+        kind, slope = '', None
+        if i + 1 < len(kept):
+            next_s, next_value, _ = kept[i + 1]
+            if _same_time(time_s, next_s):
+                kind = 'jump'
+            elif _same_value(value, next_value):
+                kind, slope = 'hold', 0.0
+            else:
+                kind = 'ramp'
+                slope = (next_value - value) / (next_s - time_s) * 60.0
+        points.append({
+            'time_s': time_s - offset,
+            'value': value,
+            'cycle': cycle_override if cycle_override is not None else number,
+            'kind': kind,
+            'slope_per_min': slope,
+        })
+    return points
+
+
+def temperature_breakpoints(phases, timeline, p=None, *, cycle=None, relative=True):
+    """Exact piecewise-linear temperature points for the selected phases.
+
+    Points are returned in seconds (relative to the selected cycle start when
+    requested). A discontinuity is represented by two points at the same time.
+    """
+    indices, cycle_start_s, cycle_override, _ = _select_cycle_indices(phases, timeline, cycle)
+    offset = cycle_start_s if relative and cycle is not None else 0.0
+    return _temperature_breakpoints_for_indices(phases, timeline, indices, offset,
+                                                cycle_override)
+
+
+def _simple_step_breakpoints(phases, timeline, indices, offset, cycle_override,
+                             key_function, value_function, note_function):
+    entries = []
+    previous_key = object()
+    for index in indices:
+        phase = phases[index]
+        key = key_function(phase)
+        if entries and _same_value(key, previous_key):
+            continue
+        entries.append({
+            'time_s': timeline.starts[index] - offset,
+            'value': value_function(phase),
+            'cycle': cycle_override if cycle_override is not None else phase.cycle,
+            'kind': 'step',
+            'note': note_function(phase),
+        })
+        previous_key = key
+    return entries
+
+
+def _humidity_step_breakpoints(phases, timeline, indices, offset, cycle_override):
+    candidates = []
+
+    def add(time_s, value, note, number):
+        candidates.append({'time_s': time_s, 'value': value, 'note': note, 'cycle': number})
+
+    for index in indices:
+        phase = phases[index]
+        start_s = timeline.starts[index]
+        end_s = start_s + phase.duration_s
+        middle = (start_s + end_s) / 2.0
+        base = timeline.at(middle)
+        base_value = base.humidity_rh
+        base_note = _humidity_note(base_value, base.undefined_humidity_label)
+
+        start = timeline.at(start_s)
+        start_value = start.humidity_rh
+        start_note = _humidity_note(start_value, start.undefined_humidity_label)
+        maximum = max(phase.temperature_start_c, phase.temperature_end_c)
+        constant = _same_value(phase.temperature_start_c, phase.temperature_end_c)
+        if phase.humidity_at_threshold is not None and constant:
+            base_note = 'at_threshold'
+            start_note = 'at_threshold'
+        threshold_at_start = (
+            phase.humidity_at_threshold is not None
+            and not constant
+            and _same_value(phase.temperature_start_c, maximum)
+        )
+        if threshold_at_start:
+            start_value = phase.humidity_at_threshold
+            start_note = 'at_threshold'
+
+        if not (_same_value(start_value, base_value) and start_note == base_note):
+            add(start_s, start_value, start_note, phase.cycle)
+            add(start_s, base_value, base_note, phase.cycle)
+        else:
+            add(start_s, base_value, base_note, phase.cycle)
+
+        threshold_at_end = (
+            phase.humidity_at_threshold is not None
+            and not constant
+            and _same_value(phase.temperature_end_c, maximum)
+        )
+        if threshold_at_end:
+            add(end_s, phase.humidity_at_threshold, 'at_threshold', phase.cycle)
+        elif (phase.humidity_at_threshold is None and phase.undefined_humidity_label
+              and not constant and _same_value(phase.temperature_end_c, maximum)):
+            end_value = phase.humidity_rh
+            end_note = _humidity_note(end_value, phase.undefined_humidity_label)
+            if not (_same_value(end_value, base_value) and end_note == base_note):
+                add(end_s, end_value, end_note, phase.cycle)
+
+    candidates.sort(key=lambda item: item['time_s'])
+    merged = []
+    for item in candidates:
+        if (merged and _same_value(item['value'], merged[-1]['value'])
+                and item['note'] == merged[-1]['note']):
+            continue
+        merged.append(item)
+    return [{
+        'time_s': item['time_s'] - offset,
+        'value': item['value'],
+        'cycle': cycle_override if cycle_override is not None else item['cycle'],
+        'kind': 'step',
+        'note': item['note'],
+    } for item in merged]
+
+
+def _normalize_step_curve(curve):
+    curve_key = str(curve).strip().lower()
+    if curve_key in {'humidity', 'humidity_rh', 'feuchte', 'feuchtigkeit', 'rh'}:
+        return 'humidity'
+    if curve_key in {'operation', 'operation_mode', 'operating_mode', 'mode',
+                     'betriebsmodus'}:
+        return 'operation'
+    if curve_key in {'voltage', 'voltage_v', 'spannung', 'u'}:
+        return 'voltage'
+    raise ValueError(f'Unknown step curve: {curve!r}.')
+
+
+def _step_breakpoints_for_indices(phases, timeline, curve_key, indices, offset,
+                                  cycle_override):
+    if curve_key == 'humidity':
+        return _humidity_step_breakpoints(phases, timeline, indices, offset, cycle_override)
+    if curve_key == 'operation':
+        return _simple_step_breakpoints(
+            phases, timeline, indices, offset, cycle_override,
+            key_function=lambda phase: phase.mode,
+            value_function=lambda phase: 1 if phase.mode == '3.2' else 0,
+            note_function=lambda phase: f'modus={phase.mode}',
+        )
+    return _simple_step_breakpoints(
+        phases, timeline, indices, offset, cycle_override,
+        key_function=lambda phase: phase.voltage_v,
+        value_function=lambda phase: phase.voltage_v,
+        note_function=lambda phase: '',
+    )
+
+
+def step_breakpoints(phases, timeline, curve, p=None, *, cycle=None, relative=True):
+    """Step points for humidity, operation mode or voltage.
+
+    Values apply from their time until the next point. Operation mode is
+    exported as derived 0/1 with the raw mode in the note.
+    """
+    curve_key = _normalize_step_curve(curve)
+    indices, cycle_start_s, cycle_override, _ = _select_cycle_indices(phases, timeline, cycle)
+    offset = cycle_start_s if relative and cycle is not None else 0.0
+    return _step_breakpoints_for_indices(phases, timeline, curve_key, indices,
+                                         offset, cycle_override)
+
+
+def _actuator_blocks_for_indices(phases, timeline, p, indices, offset,
+                                 cycle_override):
+    cycle_duration_s = (p.load_open_seconds + p.load_hold_seconds
+                        + p.load_close_seconds + p.load_pause_seconds)
+    blocks = []
+    position = 0
+    while position < len(indices):
+        index = indices[position]
+        if phases[index].mode != '3.2':
+            position += 1
+            continue
+        end_position = position + 1
+        while (end_position < len(indices)
+               and phases[indices[end_position]].mode == '3.2'):
+            end_position += 1
+        start_s = timeline.starts[index]
+        if end_position < len(indices):
+            end_s = timeline.starts[indices[end_position]]
+        else:
+            last_index = indices[-1]
+            end_s = timeline.starts[last_index] + phases[last_index].duration_s
+        repeated_start_s = start_s + p.load_start_delay_seconds
+        complete_cycles = 0
+        if cycle_duration_s > 0 and end_s >= repeated_start_s:
+            complete_cycles = int((end_s - repeated_start_s) // cycle_duration_s)
+        blocks.append({
+            'time_s': start_s - offset,
+            'end_s': end_s - offset,
+            'start_abs': start_s,
+            'end_abs': end_s,
+            'cycle': cycle_override if cycle_override is not None else phases[index].cycle,
+            'start_delay_s': p.load_start_delay_seconds,
+            'open_s': p.load_open_seconds,
+            'hold_s': p.load_hold_seconds,
+            'close_s': p.load_close_seconds,
+            'pause_s': p.load_pause_seconds,
+            'max_percent': p.load_max_percent,
+            'cycle_duration_s': cycle_duration_s,
+            'complete_cycles': complete_cycles,
+        })
+        position = end_position
+    return blocks
+
+
+def actuator_blocks(phases, timeline, p, *, cycle=None, relative=True):
+    """Summaries of contiguous Mode-3.2 blocks, without individual events."""
+    indices, cycle_start_s, cycle_override, _ = _select_cycle_indices(phases, timeline, cycle)
+    offset = cycle_start_s if relative and cycle is not None else 0.0
+    return _actuator_blocks_for_indices(phases, timeline, p, indices, offset,
+                                        cycle_override)
+
+
+def _breakpoint_number(value):
+    if value is None or value == '':
+        return ''
+    if isinstance(value, str):
+        return value
+    text = f'{float(value):.6f}'.rstrip('0').rstrip('.')
+    return '0' if text in {'-0', ''} else text
+
+
+def _round_half_up(value):
+    return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
+
+
+def _round_breakpoint_times(points, whole_seconds):
+    if not whole_seconds:
+        return False
+    changed = False
+    previous = None
+    for point in points:
+        original = point['time_s']
+        rounded = _round_half_up(original)
+        if previous is not None and rounded <= previous:
+            rounded = previous + 1
+        if rounded != original:
+            changed = True
+        point['time_s'] = float(rounded)
+        previous = rounded
+    return changed
+
+
+def _actuator_cycle_points(phases, timeline, p, blocks, offset, cycle_override):
+    block = next((item for item in blocks if item['complete_cycles'] > 0), None)
+    if block is None:
+        return None
+    start_s = block['start_abs'] + p.load_start_delay_seconds
+    maximum = p.load_max_percent
+    raw = [(start_s, 0.0)]
+
+    def add(time_s, value):
+        if raw and _same_time(time_s, raw[-1][0]) and _same_value(value, raw[-1][1]):
+            return
+        raw.append((time_s, value))
+
+    if p.load_open_seconds > 0:
+        add(start_s + p.load_open_seconds, maximum)
+    else:
+        add(start_s, maximum)
+    hold_end = start_s + p.load_open_seconds + p.load_hold_seconds
+    add(hold_end, maximum)
+    if p.load_close_seconds > 0:
+        add(hold_end + p.load_close_seconds, 0.0)
+    else:
+        add(hold_end, 0.0)
+    add(start_s + block['cycle_duration_s'], 0.0)
+
+    points = []
+    for i, (time_s, value) in enumerate(raw):
+        kind, slope = '', None
+        if i + 1 < len(raw):
+            next_s, next_value = raw[i + 1]
+            if _same_time(time_s, next_s):
+                kind = 'jump'
+            elif _same_value(value, next_value):
+                kind, slope = 'hold', 0.0
+            else:
+                kind = 'ramp'
+                slope = (next_value - value) / (next_s - time_s) * 60.0
+        points.append({
+            'time_s': time_s - offset,
+            'value': value,
+            'cycle': cycle_override if cycle_override is not None else block['cycle'],
+            'kind': kind,
+            'slope_per_min': slope,
+            'note': 'erster vollstaendiger Zyklus' if i == 0 else '',
+        })
+    return points
+
+
+def _xy_number(value):
+    """Compact numeric text for CSV; blank means an undefined point."""
+    if value is None or value == '':
+        return ''
+    if isinstance(value, str):
+        return value
+    text = f'{float(value):.15g}'
+    return '0' if text == '-0' else text
+
+
+def _dedupe_xy(points):
+    cleaned = []
+    for x, y in points:
+        if (cleaned and _same_time(x, cleaned[-1][0])
+                and _same_value(y, cleaned[-1][1])):
+            continue
+        cleaned.append((x, y))
+    return cleaned
+
+
+def _step_xy_polyline(points, end_s):
+    """Turn change points into an ordered polyline with vertical step edges."""
+    if not points:
+        return []
+    series = [(points[0]['time_s'], points[0]['value'])]
+    previous_time = points[0]['time_s']
+    previous_value = points[0]['value']
+    for point in points[1:]:
+        time_s, value = point['time_s'], point['value']
+        if _same_time(time_s, previous_time):
+            series.append((time_s, value))
+        else:
+            series.append((time_s, previous_value))
+            series.append((time_s, value))
+        previous_time, previous_value = time_s, value
+    if end_s > previous_time:
+        series.append((end_s, previous_value))
+    return _dedupe_xy(series)
+
+
+def _simplify_xy_polyline(points):
+    """Drop points that lie on a straight segment; keep duplicate-x jumps."""
+    points = _dedupe_xy(points)
+    if len(points) <= 2:
+        return points
+    kept = [points[0]]
+    for index in range(1, len(points) - 1):
+        left_x, left_y = kept[-1]
+        mid_x, mid_y = points[index]
+        right_x, right_y = points[index + 1]
+        if (left_y is None or mid_y is None or right_y is None
+                or _same_time(left_x, mid_x) or _same_time(mid_x, right_x)):
+            kept.append(points[index])
+            continue
+        slope_left = (mid_y - left_y) / (mid_x - left_x)
+        slope_right = (right_y - mid_y) / (right_x - mid_x)
+        if abs(slope_left - slope_right) > 1e-12:
+            kept.append(points[index])
+    kept.append(points[-1])
+    return kept
+
+
+def _actuator_cycle_xy(phases, timeline, parameters, cycle_indices,
+                       cycle_start_s, cycle_end_s):
+    """Exact first-cycle actuator polyline, including vertical jumps."""
+    duration_s = cycle_end_s - cycle_start_s
+    if parameters is None:
+        return [(0.0, 0.0), (duration_s, 0.0)]
+
+    times = {timeline.starts[index] for index in cycle_indices}
+    times.add(cycle_start_s)
+    times.add(cycle_end_s)
+    times.update(time_s for time_s in timeline.actuator_events
+                 if cycle_start_s < time_s < cycle_end_s)
+
+    ordered = sorted(time_s for time_s in times
+                     if cycle_start_s <= time_s <= cycle_end_s)
+    filtered = []
+    for time_s in ordered:
+        # actuator_event_times() adds nextafter(t, -inf) before a jump. In an
+        # XY table the jump itself carries both values at the same x.
+        if math.nextafter(time_s, math.inf) in times:
+            continue
+        filtered.append(time_s)
+
+    points = []
+    for time_s in filtered:
+        if _same_time(time_s, cycle_start_s):
+            value = load_percent_at(phases, timeline.starts, time_s,
+                                    parameters, timeline.load_schedule)
+            points.append((0.0, value))
+        elif _same_time(time_s, cycle_end_s):
+            value = load_percent_at(phases, timeline.starts,
+                                    math.nextafter(time_s, -math.inf),
+                                    parameters, timeline.load_schedule)
+            points.append((duration_s, value))
+        else:
+            before = load_percent_at(phases, timeline.starts,
+                                     math.nextafter(time_s, -math.inf),
+                                     parameters, timeline.load_schedule)
+            value = load_percent_at(phases, timeline.starts, time_s,
+                                    parameters, timeline.load_schedule)
+            if not _same_number(before, value):
+                points.append((time_s - cycle_start_s, before))
+            points.append((time_s - cycle_start_s, value))
+    return _simplify_xy_polyline(points)
+
+
+def _export_cycle1_xy_table(path, timeline, parameters):
+    if timeline.parameters is None:
+        timeline = Timeline(timeline.phases, parameters)
+    phases = timeline.phases
+    cycle1_indices = [i for i, phase in enumerate(phases) if phase.cycle == 1]
+    if not cycle1_indices:
+        raise ValueError('The profile contains no cycle 1 phases.')
+    last_index = cycle1_indices[-1]
+    cycle_start_s = timeline.starts[cycle1_indices[0]]
+    cycle_end_s = timeline.starts[last_index] + phases[last_index].duration_s
+    cycles_total = max(phase.cycle for phase in phases)
+    cycle_duration_s = cycle_end_s - cycle_start_s
+    mode_categories = sorted({phase.mode for phase in phases})
+
+    curves = []
+    temperature = temperature_breakpoints(phases, timeline, parameters, cycle=1)
+    curves.append(('Temperatur',
+                   [(point['time_s'], point['value']) for point in temperature]))
+
+    humidity = step_breakpoints(phases, timeline, 'humidity', parameters, cycle=1)
+    curves.append(('Feuchte', _step_xy_polyline(humidity, cycle_duration_s)))
+
+    operation = _simple_step_breakpoints(
+        phases, timeline, cycle1_indices, cycle_start_s, 1,
+        key_function=lambda phase: phase.mode,
+        value_function=lambda phase: mode_categories.index(phase.mode),
+        note_function=lambda phase: f'modus={phase.mode}',
+    )
+    curves.append(('Operation', _step_xy_polyline(operation, cycle_duration_s)))
+
+    voltage = step_breakpoints(phases, timeline, 'voltage', parameters, cycle=1)
+    curves.append(('Spannung', _step_xy_polyline(voltage, cycle_duration_s)))
+
+    actuator = _actuator_cycle_xy(phases, timeline, parameters, cycle1_indices,
+                                  cycle_start_s, cycle_end_s)
+    curves.append(('Aktuator', actuator))
+
+    headers = []
+    for name, _ in curves:
+        headers.extend([f'{name}_x', f'{name}_y'])
+    row_count = max(len(points) for _, points in curves)
+    with Path(path).open('w', newline='', encoding='utf-8-sig') as stream:
+        writer = csv.writer(stream, delimiter=';')
+        writer.writerow(headers)
+        for row_index in range(row_count):
+            row = []
+            for _, points in curves:
+                if row_index < len(points):
+                    x, y = points[row_index]
+                    row.extend([_xy_number(x), _xy_number(y)])
+                else:
+                    row.extend(['', ''])
+            writer.writerow(row)
+    return {'rows': row_count, 'cycles_total': cycles_total,
+            'cycle_duration_s': cycle_duration_s}
+
+
+def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
+                       relative=True, whole_seconds=False, fmt='csv',
+                       include_actuator_points=False):
+    """Export exact phase-derived breakpoints as CSV or JSON.
+
+    Temperature points are the exact linear polygon; step curves change only
+    when their value changes. Mode-3.2 actuator runs are summarized as blocks,
+    because individual actuator events would be far too numerous.
+    """
+    unit_key = str(time_unit).strip().lower()
+    unit_aliases = {'s': 's', 'sec': 's', 'seconds': 's',
+                    'min': 'min', 'minutes': 'min', 'm': 'min',
+                    'h': 'h', 'hours': 'h', 'hour': 'h'}
+    if unit_key not in unit_aliases:
+        raise ValueError("time_unit must be 's', 'min' or 'h'.")
+    unit = unit_aliases[unit_key]
+    factor = {'s': 1.0, 'min': 60.0, 'h': 3600.0}[unit]
+    format_key = str(fmt).strip().lower()
+    if format_key not in {'csv', 'json'}:
+        raise ValueError("fmt must be 'csv' or 'json'.")
+    if timeline.parameters is None:
+        timeline = Timeline(phases, p)
+
+    indices, cycle_start_s, cycle_override, repeat = _select_cycle_indices(
+        phases, timeline, cycle)
+    point_offset = cycle_start_s if relative and cycle is not None else 0.0
+    notes = []
+    curves = {}
+    curves['Temperatur'] = _temperature_breakpoints_for_indices(
+        phases, timeline, indices, point_offset, cycle_override)
+    for name, curve_key in (('Feuchte', 'humidity'), ('Operation', 'operation'),
+                            ('Spannung', 'voltage')):
+        curves[name] = _step_breakpoints_for_indices(
+            phases, timeline, curve_key, indices, point_offset, cycle_override)
+    blocks = _actuator_blocks_for_indices(
+        phases, timeline, p, indices, point_offset, cycle_override)
+    curves['Aktuator_Block'] = blocks
+
+    if any(point['value'] is None for point in curves['Feuchte']):
+        notes.append('Undefined humidity is exported explicitly (empty value with note).')
+
+    if include_actuator_points:
+        points = _actuator_cycle_points(phases, timeline, p, blocks,
+                                        point_offset, cycle_override)
+        if points is None:
+            notes.append('No complete actuator cycle found; no actuator points exported.')
+        else:
+            curves['Aktuator'] = points
+
+    rounded = False
+    for name, points in curves.items():
+        if name == 'Aktuator_Block':
+            if whole_seconds:
+                previous = None
+                for point in points:
+                    original_start = point['time_s']
+                    original_end = point['end_s']
+                    start = _round_half_up(original_start)
+                    if previous is not None and start <= previous:
+                        start = previous + 1
+                    end = _round_half_up(original_end)
+                    if end < start:
+                        end = start
+                    if start != original_start or end != original_end:
+                        rounded = True
+                    point['time_s'] = float(start)
+                    point['end_s'] = float(end)
+                    previous = start
+            for point in points:
+                point['time_s'] /= factor
+                point['end_s'] /= factor
+        else:
+            if _round_breakpoint_times(points, whole_seconds):
+                rounded = True
+            for point in points:
+                point['time_s'] /= factor
+
+    if rounded:
+        notes.append('Times rounded to whole seconds; collisions were shifted by +1 s.')
+    if repeat is not None and repeat['remaining'] == 0:
+        notes.append('Only one cycle exists; no repetition row was written.')
+
+    unit_label = {'s': 's', 'min': 'min', 'h': 'h'}[unit]
+    rows = []
+
+    def append_rows(curve, points, value_unit, kind_key='kind'):
+        for index, point in enumerate(points):
+            note_parts = []
+            if point.get('note'):
+                note_parts.append(point['note'])
+            if curve == 'Aktuator_Block':
+                note_parts.append(
+                    'start={};ende={};verzoegerung={};open={};hold={};close={};pause={};'
+                    'max={};zyklusdauer={};vollstaendige_zyklen={}'.format(
+                        _breakpoint_number(point['time_s']),
+                        _breakpoint_number(point['end_s']),
+                        _breakpoint_number(point['start_delay_s']),
+                        _breakpoint_number(point['open_s']),
+                        _breakpoint_number(point['hold_s']),
+                        _breakpoint_number(point['close_s']),
+                        _breakpoint_number(point['pause_s']),
+                        _breakpoint_number(point['max_percent']),
+                        _breakpoint_number(point['cycle_duration_s']),
+                        point['complete_cycles'],
+                    ))
+            kind = point.get(kind_key, '')
+            slope = point.get('slope_per_min')
+            value = point.get('value')
+            rows.append({
+                'csv': [
+                    curve, str(index), str(point['cycle']),
+                    _breakpoint_number(point['time_s']), _breakpoint_number(value),
+                    value_unit, kind,
+                    _breakpoint_number(slope) if slope is not None else '',
+                    ';'.join(note_parts),
+                ],
+                'json': {
+                    'kurve': curve, 'punkt': index, 'zyklus': point['cycle'],
+                    't_s': point['time_s'], 'wert': value, 'einheit': value_unit,
+                    'bis_naechster': kind, 'steigung_pro_min': slope,
+                    'hinweis': ';'.join(note_parts),
+                },
+            })
+
+    append_rows('Temperatur', curves['Temperatur'], '°C')
+    append_rows('Feuchte', curves['Feuchte'], '%RH')
+    append_rows('Operation', curves['Operation'], '0/1')
+    append_rows('Spannung', curves['Spannung'], 'V')
+    append_rows('Aktuator_Block', curves['Aktuator_Block'], '')
+    if 'Aktuator' in curves:
+        append_rows('Aktuator', curves['Aktuator'], '%')
+
+    repeat_row = None
+    if repeat is not None and repeat['remaining'] > 0:
+        repeat_row = [
+            'Wiederholung', '', '', '', '', '', '', '',
+            'Wiederholung: {} Zyklen à {} {}'.format(
+                repeat['remaining'],
+                _breakpoint_number(repeat['cycle_duration_s'] / factor),
+                unit_label),
+        ]
+
+    counts = {name: len(points) for name, points in curves.items()}
+    if format_key == 'csv':
+        with Path(path).open('w', newline='', encoding='utf-8-sig') as stream:
+            writer = csv.writer(stream, delimiter=';')
+            writer.writerow(['kurve', 'punkt', 'zyklus', 't_s', 'wert', 'einheit',
+                             'bis_naechster', 'steigung_pro_min', 'hinweis'])
+            for row in rows:
+                writer.writerow(row['csv'])
+            if repeat_row is not None:
+                writer.writerow(repeat_row)
+    else:
+        payload = {
+            'cycle': cycle,
+            'time_unit': unit,
+            'relative': relative,
+            'whole_seconds': whole_seconds,
+            'counts': counts,
+            'notes': notes,
+            'curves': {},
+        }
+        for row in rows:
+            payload['curves'].setdefault(row['json']['kurve'], []).append(row['json'])
+        if repeat_row is not None:
+            payload['repeat'] = {
+                'remaining': repeat['remaining'],
+                'cycles_total': repeat['cycles_total'],
+                'cycle_duration_s': repeat['cycle_duration_s'],
+                'text': repeat_row[-1],
+            }
+        with Path(path).open('w', encoding='utf-8') as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            stream.write('\n')
+
+    return {
+        'counts': counts,
+        'notes': notes,
+        'warnings': notes,
+        'cycle': cycle,
+        'time_unit': unit,
+        'relative': relative,
+        'whole_seconds': whole_seconds,
+        'repeat': repeat,
+        'rows': len(rows),
+    }
+
+
 def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
@@ -1767,7 +2536,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             ticks = list(enumerate(categories)) if categories else [(v, f'{v:g}') for v in ([lo + i*tick_step for i in range(round((hi-lo)/tick_step)+1)] if tick_step else [lo, hi])]
             for val, text in ticks:
                 canvas.create_text(left-7, y(val), text=text, anchor='e')
-            previous = None
             undefined_spans = []
             polylines = []
             polyline = []
@@ -1793,13 +2561,11 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                             else:
                                 undefined_spans.append((point_a, point_b))
                         finish_polyline()
-                        previous = None
                         continue
                     # The preceding endpoint remains in the same polyline;
                     # a changed va at the same x therefore draws the jump.
                     polyline.append((x(point_a), y(va)))
                     polyline.append((x(point_b), y(vb)))
-                    previous = vb
             finish_polyline()
             dense = sum(map(len, polylines)) > 2*max(1, int(right-left))
             for line_points in polylines:
@@ -1947,14 +2713,17 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             ttk.Label(form,text=parameter_label(key),wraplength=250).grid(row=row,column=0,sticky='w',padx=(0,8),pady=5)
             var = tk.BooleanVar(value=value) if isinstance(value,bool) else tk.StringVar(value='' if value is None else str(value))
             values[key] = var
-            if isinstance(value,bool): widget = ttk.Checkbutton(form,variable=var)
+            if isinstance(value,bool):
+                widget = ttk.Checkbutton(form,variable=var,command=update_later)
             elif key.endswith('mode'):
                 widget = ttk.Combobox(form,textvariable=var,state='readonly',width=12,
                     values=['1.1','1.2','2.1','2.2','2.3','2.4','3.1','3.2','3.3','3.4'])
-            elif key == 'x_axis_unit': widget = ttk.Combobox(form,textvariable=var,state='readonly',values=list(TIME_UNITS))
-            else: widget = ttk.Entry(form,textvariable=var,width=14)
+            else:
+                widget = ttk.Entry(form,textvariable=var,width=14)
             widget.grid(row=row,column=1,pady=5,sticky='ew')
-            if isinstance(widget, ttk.Entry):
+            if isinstance(widget, ttk.Combobox):
+                widget.bind('<<ComboboxSelected>>', update_later)
+            elif isinstance(widget, ttk.Entry):
                 widget.bind('<KeyRelease>', update_later)
                 widget.bind('<Return>', update_now)
                 widget.bind('<FocusOut>', flush_pending_update)
@@ -2018,6 +2787,94 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             except OSError as exc:
                 messagebox.showerror('Export Failed', str(exc))
 
+    def export_cycle1():
+        if not update():
+            return
+        path = filedialog.asksaveasfilename(defaultextension='.csv',
+                                          initialfile=f'{selected.get()}_Cycle1.csv',
+                                          filetypes=[('CSV', '*.csv')])
+        if path:
+            try:
+                export_cycle1_csv(path, state['timeline'], state['p'])
+                messagebox.showinfo('Export', f'Cycle 1 XY table saved:\n{path}')
+            except OSError as exc:
+                messagebox.showerror('Export Failed', str(exc))
+
+    def export_breakpoints_dialog():
+        phases = state.get('phases')
+        timeline = state.get('timeline')
+        p = state.get('p')
+        if phases is None or timeline is None or p is None:
+            messagebox.showinfo('Export Breakpoints',
+                                'Generate the profile before exporting breakpoints.')
+            return
+        cycles = sorted({phase.cycle for phase in phases})
+        dialog = tk.Toplevel(root)
+        dialog.title('Export Breakpoints')
+        dialog.transient(root)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill='both', expand=True)
+
+        cycle_var = tk.StringVar(value='all')
+        unit_var = tk.StringVar(value='s')
+        format_var = tk.StringVar(value='csv')
+        whole_var = tk.BooleanVar(value=False)
+        ttk.Label(body, text='Cycle').grid(row=0, column=0, sticky='w', pady=4)
+        ttk.Combobox(body, textvariable=cycle_var, state='readonly', width=20,
+                     values=['all'] + [str(number) for number in cycles]
+                     + ['first + repeat']).grid(row=0, column=1, sticky='ew', pady=4)
+        ttk.Label(body, text='Time unit').grid(row=1, column=0, sticky='w', pady=4)
+        ttk.Combobox(body, textvariable=unit_var, state='readonly', width=20,
+                     values=['s', 'min', 'h']).grid(row=1, column=1, sticky='ew', pady=4)
+        ttk.Label(body, text='Format').grid(row=2, column=0, sticky='w', pady=4)
+        ttk.Combobox(body, textvariable=format_var, state='readonly', width=20,
+                     values=['csv', 'json']).grid(row=2, column=1, sticky='ew', pady=4)
+        ttk.Checkbutton(body, text='Round times to whole seconds',
+                        variable=whole_var).grid(row=3, column=0, columnspan=2,
+                                                 sticky='w', pady=4)
+        buttons = ttk.Frame(body)
+        buttons.grid(row=4, column=0, columnspan=2, sticky='e', pady=(10, 0))
+
+        def run_export():
+            selected_cycle = cycle_var.get()
+            if selected_cycle == 'all':
+                cycle = None
+            elif selected_cycle == 'first + repeat':
+                cycle = 'first_plus_repeat'
+            else:
+                cycle = int(selected_cycle)
+            output_format = format_var.get()
+            path = filedialog.asksaveasfilename(
+                parent=dialog, defaultextension=f'.{output_format}',
+                initialfile=f'{selected.get()}_Breakpoints.{output_format}',
+                filetypes=[('CSV', '*.csv'), ('JSON', '*.json')]
+                if output_format == 'csv' else [('JSON', '*.json'), ('CSV', '*.csv')])
+            if not path:
+                return
+            if Path(path).exists() and not messagebox.askyesno(
+                    'Overwrite', f'{path} already exists. Replace it?', parent=dialog):
+                return
+            try:
+                info = export_breakpoints(path, phases, timeline, p, cycle=cycle,
+                                          time_unit=unit_var.get(),
+                                          whole_seconds=whole_var.get(),
+                                          fmt=output_format)
+            except (ValueError, OSError, TypeError) as exc:
+                messagebox.showerror('Export Breakpoints Failed', str(exc),
+                                     parent=dialog)
+                return
+            message = f'Breakpoints saved:\n{path}\n\n{info["counts"]}'
+            if info['notes']:
+                message += '\n' + '\n'.join(info['notes'])
+            messagebox.showinfo('Export Breakpoints', message, parent=dialog)
+            dialog.destroy()
+
+        ttk.Button(buttons, text='Export', command=run_export).pack(side='right', padx=(6, 0))
+        ttk.Button(buttons, text='Cancel', command=dialog.destroy).pack(side='right')
+        dialog.grab_set()
+        dialog.wait_window()
+
     def save_config():
         if not update(): return
         try:
@@ -2064,6 +2921,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     buttons = ttk.Frame(outer)
     buttons.pack(fill='x', pady=(10, 0))
     for label, command in [('Generate Profile', update), ('Save CSV', export),
+                           ('Save Cycle 1 (Excel)', export_cycle1),
+                           ('Export Breakpoints …', export_breakpoints_dialog),
                            ('Save Global', save_global), ('Save Current Test', save_config),
                            ('Load Configuration', load_config)]:
         ttk.Button(buttons, text=label, command=command).pack(side='left', padx=(0, 8))
@@ -2093,17 +2952,50 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--example', metavar='CSV', help='Export the default profile without opening the GUI')
+    parser.add_argument('--cycle1', metavar='CSV', help='Export the first cycle as an Excel XY x/y breakpoint table')
+    parser.add_argument('--breakpoints', metavar='PFAD', help='Export exact phase-derived breakpoints as CSV or JSON')
+    parser.add_argument('--cycle', default=None,
+                        help="Cycle number for --breakpoints, or 'first_plus_repeat'")
+    parser.add_argument('--time-unit', choices=['s', 'min', 'h'], default='s',
+                        help='Time unit for --breakpoints (default: s)')
+    parser.add_argument('--whole-seconds', action='store_true',
+                        help='Round --breakpoints times to whole seconds')
+    parser.add_argument('--format', choices=['csv', 'json'], default=None,
+                        help='Breakpoint output format (default: infer from suffix, otherwise csv)')
     parser.add_argument('--test', choices=list(GENERATORS), default=None, help='Test ID (overrides JSON Test ID)')
     parser.add_argument('--config', type=Path, help='Overall JSON configuration for GUI or CLI')
     args = parser.parse_args()
     config_path = args.config or DEFAULT_CONFIG_PATH
-    if args.example:
+    cycle = args.cycle
+    if cycle is not None and str(cycle).lower() not in {'all', 'first_plus_repeat'}:
+        try:
+            cycle = int(cycle)
+        except (TypeError, ValueError):
+            parser.error('--cycle must be an integer, all, or first_plus_repeat')
+    elif str(cycle).lower() == 'all':
+        cycle = None
+    if args.example or args.cycle1 or args.breakpoints:
         config = load_configuration(config_path) if config_path.exists() else default_configuration()
         p = parameters_from_configuration(config,args.test or 'ENV_026')
-        _, timeline = generate_phases(p)
-        point_count = count_sample_points(timeline, p)
-        export_csv(args.example, iter_samples(timeline, p))
-        print(f'{args.example}: {point_count} Points, {timeline.duration_s/3600:g} Hours')
+        phases, timeline = generate_phases(p)
+        if args.example:
+            point_count = count_sample_points(timeline, p)
+            export_csv(args.example, iter_samples(timeline, p))
+            print(f'{args.example}: {point_count} Points, {timeline.duration_s/3600:g} Hours')
+        if args.cycle1:
+            info = export_cycle1_csv(args.cycle1, timeline, p)
+            print(f"{args.cycle1}: Cycle 1, {info['rows']} Points, "
+                  f"{info['cycles_total']} Cycles, {info['cycle_duration_s']/3600:g} Hours")
+        if args.breakpoints:
+            output_format = args.format
+            if output_format is None:
+                output_format = 'json' if Path(args.breakpoints).suffix.lower() == '.json' else 'csv'
+            info = export_breakpoints(args.breakpoints, phases, timeline, p,
+                                      cycle=cycle, time_unit=args.time_unit,
+                                      whole_seconds=args.whole_seconds,
+                                      fmt=output_format)
+            print(f"{args.breakpoints}: {info['rows']} Breakpoint rows, "
+                  f"{info['counts']}, {output_format}")
     else:
         launch_gui(config_path)
 
