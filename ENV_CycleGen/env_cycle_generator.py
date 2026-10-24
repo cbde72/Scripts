@@ -2138,6 +2138,11 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     view.pack(side='left', fill='both', expand=True)
     controls = ttk.Frame(view)
     controls.pack(fill='x', pady=(0, 6))
+    # Second row for axis and tracker fields so the bar never exceeds the window width.
+    controls2 = ttk.Frame(view)
+    controls2.pack(fill='x', pady=(0, 6))
+    controls3 = ttk.Frame(view)
+    controls3.pack(fill='x', pady=(0, 6))
     ttk.Label(controls, text='Chart View').pack(side='left')
     chart_view = tk.StringVar(value='Complete Profile')
     chart_choice = ttk.Combobox(controls, textvariable=chart_view, state='readonly',
@@ -2152,8 +2157,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     x_unit = tk.StringVar(value='Seconds')
     unit_choice = ttk.Combobox(controls, textvariable=x_unit, values=list(TIME_UNITS), state='readonly', width=10)
     unit_choice.pack(side='left', padx=6)
-    axis_controls = ttk.Frame(controls)
-    axis_controls.pack(side='left', padx=(14, 0))
+    axis_controls = ttk.Frame(controls2)
+    axis_controls.pack(side='left')
     x_start_label = tk.StringVar(value='X Start [s]')
     x_start_widget_label = ttk.Label(axis_controls, textvariable=x_start_label)
     x_start_widget_label.pack(side='left')
@@ -2176,8 +2181,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     axis_apply_button.pack(side='left')
     axis_feedback = tk.StringVar(value='Blank = automatic. Chart time always starts at 0 s.')
     ttk.Label(view, textvariable=axis_feedback).pack(anchor='w', pady=(0, 4))
-    tracker_controls = ttk.Frame(controls)
-    tracker_controls.pack(side='left', padx=(14, 0))
+    tracker_controls = ttk.Frame(controls3)
+    tracker_controls.pack(side='left')
     tracker_label = ttk.Label(tracker_controls, text='Tracker Step [s]')
     tracker_label.pack(side='left')
     tracker_step = tk.StringVar(value='60')
@@ -2710,7 +2715,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                        x_end_widget_label,x_end_entry,axis_apply_button,tracker_label,tracker_entry,tracker_apply):
             widget.pack_forget()
         if 'x_axis_unit' in global_visible:
-            unit_label.pack(side='left',padx=6);unit_choice.pack(side='left',padx=6)
+            unit_label.pack(side='left',padx=(8,0),after=preview_spin);unit_choice.pack(side='left',padx=6,after=unit_label)
         if 'x_axis_start_seconds' in global_visible:
             x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
         if 'x_axis_end_seconds' in global_visible:
