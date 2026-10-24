@@ -88,9 +88,10 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(reader.fieldnames, [
             'Temperatur_x', 'Temperatur_y', 'Feuchte_x', 'Feuchte_y',
             'Operation_x', 'Operation_y', 'Spannung_x', 'Spannung_y',
-            'Aktuator_x', 'Aktuator_y'])
+            'Aktuator_x', 'Aktuator_y', 'Legende_Operation_code',
+            'Legende_Operation_modus', 'Legende_x_einheit'])
         self.assertEqual(info, {'rows': len(rows), 'cycles_total': 3,
-                                'cycle_duration_s': 5400})
+                                'cycle_duration_s': 5400, 'time_unit': 's'})
         self.assertEqual(self._cycle1_xy(rows, 'Temperatur'),
                          [(0, 23), (945, -40), (1845, -40), (3645, 80),
                           (4545, 80), (5400, 23)])
@@ -451,7 +452,11 @@ class GeneratorTests(unittest.TestCase):
         p.x_axis_end_seconds=3600
         self.assertEqual(generate(p)[1][-1].time_s,25*3600)
         p.x_axis_unit='Days'
+        self.assertEqual(generate(p)[1][-1].time_s,25*3600)
+        p.x_axis_unit='Weeks'
         with self.assertRaises(ValueError): generate(p)
+        self.assertEqual(convert_axis_input('2','Days','Hours'),'48')
+        self.assertEqual(convert_axis_input('36','Hours','Days'),'1.5')
 
     def test_packaged_html_descriptions_and_browser_routes(self):
         from env_cycle_generator import TEST_NAMES, description_path, open_description
@@ -528,6 +533,56 @@ class GeneratorTests(unittest.TestCase):
 
 
 
+
+
+class TimeUnitAndLegendTests(unittest.TestCase):
+    def _export(self, unit):
+        p = default_parameters('ENV_026')
+        phases, timeline = generate_phases(p)
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)/'c1.csv'
+            info = export_cycle1_csv(target, timeline, p, time_unit=unit)
+            with target.open(encoding='utf-8-sig') as stream:
+                rows = list(csv.DictReader(stream, delimiter=';'))
+        return info, rows
+
+    def test_cycle1_time_units(self):
+        _, base = self._export('s')
+        for unit, factor in (('min', 60), ('h', 3600), ('d', 86400), ('Days', 86400)):
+            info, rows = self._export(unit)
+            self.assertEqual(len(rows), len(base))
+            for a, b in zip(base, rows):
+                for column in ('Temperatur_x', 'Aktuator_x', 'Operation_x'):
+                    if a[column]:
+                        self.assertAlmostEqual(float(a[column])/factor, float(b[column]), places=9)
+                    else:
+                        self.assertEqual(b[column], '')
+            self.assertEqual(rows[0]['Legende_x_einheit'], info['time_unit'])
+        with self.assertRaises(ValueError):
+            self._export('weeks')
+
+    def test_cycle1_operation_legend(self):
+        _, rows = self._export('s')
+        legend = [(r['Legende_Operation_code'], r['Legende_Operation_modus'])
+                  for r in rows if r['Legende_Operation_code']]
+        p = default_parameters('ENV_026')
+        phases, _ = generate_phases(p)
+        modes = sorted({ph.mode for ph in phases})
+        self.assertEqual(legend, [(str(i), m) for i, m in enumerate(modes)])
+
+    def test_breakpoints_days(self):
+        p = default_parameters('ENV_026')
+        phases, timeline = generate_phases(p)
+        with tempfile.TemporaryDirectory() as directory:
+            seconds = Path(directory)/'s.json'
+            days = Path(directory)/'d.json'
+            export_breakpoints(seconds, phases, timeline, p, time_unit='s', fmt='json')
+            info = export_breakpoints(days, phases, timeline, p, time_unit='d', fmt='json')
+            a = json.loads(seconds.read_text(encoding='utf-8'))
+            b = json.loads(days.read_text(encoding='utf-8'))
+        self.assertEqual(info['time_unit'], 'd')
+        for x, y in zip(a['curves']['Temperatur'], b['curves']['Temperatur']):
+            self.assertAlmostEqual(x['t_s']/86400, y['t_s'], places=9)
 
 
 class BreakpointExportTests(unittest.TestCase):

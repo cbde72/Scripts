@@ -15,7 +15,17 @@ import math
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-TIME_UNITS = {'Seconds': (1.0, 's'), 'Minutes': (60.0, 'min'), 'Hours': (3600.0, 'h')}
+TIME_UNITS = {'Seconds': (1.0, 's'), 'Minutes': (60.0, 'min'), 'Hours': (3600.0, 'h'),
+              'Days': (86400.0, 'd')}
+
+
+def resolve_time_unit(unit):
+    """Return (symbol, seconds per unit) for 's'/'min'/'h'/'d' or a TIME_UNITS name."""
+    key = str(unit).strip().lower()
+    for name, (factor, symbol) in TIME_UNITS.items():
+        if key in {name.lower(), symbol, name.lower().rstrip('s'), name.lower()[:3]}:
+            return symbol, factor
+    raise ValueError("time_unit must be 's', 'min', 'h' or 'd'.")
 
 
 def convert_axis_input(text, from_unit, to_unit):
@@ -130,7 +140,7 @@ class Parameters:
 
     def validate(self):
         if self.x_axis_unit not in TIME_UNITS:
-            raise ValueError('Time Unit must be Seconds, Minutes or Hours.')
+            raise ValueError('Time Unit must be Seconds, Minutes, Hours or Days.')
         if self.test_id not in {'ENV_026', 'ENV_013', 'ENV_014', 'ENV_015', 'ENV_012', 'ENV_002', 'ENV_003', 'ENV_004'}:
             raise ValueError('Unknown Test ID.')
         for name, value in asdict(self).items():
@@ -1303,7 +1313,7 @@ def export_csv(path, samples):
                              ['' if s.voltage_v is None else f'{s.voltage_v:.6f}'] if voltage_enabled else []))
 
 
-def export_cycle1_csv(path, timeline, parameters, step_epsilon=1e-6):
+def export_cycle1_csv(path, timeline, parameters, step_epsilon=1e-6, time_unit='s'):
     """Export the first cycle as an Excel-ready XY breakpoint table.
 
     The file contains only polyline vertices, written as adjacent x/y column
@@ -1313,7 +1323,7 @@ def export_cycle1_csv(path, timeline, parameters, step_epsilon=1e-6):
 
     `step_epsilon` is retained for API compatibility and is no longer needed.
     """
-    return _export_cycle1_xy_table(path, timeline, parameters)
+    return _export_cycle1_xy_table(path, timeline, parameters, time_unit)
 
 
 def _same_number(a, b):
@@ -1825,7 +1835,8 @@ def _actuator_cycle_xy(phases, timeline, parameters, cycle_indices,
     return _simplify_xy_polyline(points)
 
 
-def _export_cycle1_xy_table(path, timeline, parameters):
+def _export_cycle1_xy_table(path, timeline, parameters, time_unit='s'):
+    unit_symbol, factor = resolve_time_unit(time_unit)
     if timeline.parameters is None:
         timeline = Timeline(timeline.phases, parameters)
     phases = timeline.phases
@@ -1862,10 +1873,16 @@ def _export_cycle1_xy_table(path, timeline, parameters):
                                   cycle_start_s, cycle_end_s)
     curves.append(('Aktuator', actuator))
 
+    # x values are written in the selected time unit (default seconds).
+    curves = [(name, [(x / factor, y) for x, y in points]) for name, points in curves]
     headers = []
     for name, _ in curves:
         headers.extend([f'{name}_x', f'{name}_y'])
-    row_count = max(len(points) for _, points in curves)
+    # Legend: the Operation y value is the index into the modes present in the
+    # profile, so the mapping is written alongside the data.
+    legend = [(code, mode) for code, mode in enumerate(mode_categories)]
+    headers.extend(['Legende_Operation_code', 'Legende_Operation_modus', 'Legende_x_einheit'])
+    row_count = max(max(len(points) for _, points in curves), len(legend))
     with Path(path).open('w', newline='', encoding='utf-8-sig') as stream:
         writer = csv.writer(stream, delimiter=';')
         writer.writerow(headers)
@@ -1877,9 +1894,14 @@ def _export_cycle1_xy_table(path, timeline, parameters):
                     row.extend([_xy_number(x), _xy_number(y)])
                 else:
                     row.extend(['', ''])
+            if row_index < len(legend):
+                row.extend([str(legend[row_index][0]), legend[row_index][1]])
+            else:
+                row.extend(['', ''])
+            row.append(unit_symbol if row_index == 0 else '')
             writer.writerow(row)
     return {'rows': row_count, 'cycles_total': cycles_total,
-            'cycle_duration_s': cycle_duration_s}
+            'cycle_duration_s': cycle_duration_s, 'time_unit': unit_symbol}
 
 
 def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
@@ -1891,14 +1913,7 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
     when their value changes. Mode-3.2 actuator runs are summarized as blocks,
     because individual actuator events would be far too numerous.
     """
-    unit_key = str(time_unit).strip().lower()
-    unit_aliases = {'s': 's', 'sec': 's', 'seconds': 's',
-                    'min': 'min', 'minutes': 'min', 'm': 'min',
-                    'h': 'h', 'hours': 'h', 'hour': 'h'}
-    if unit_key not in unit_aliases:
-        raise ValueError("time_unit must be 's', 'min' or 'h'.")
-    unit = unit_aliases[unit_key]
-    factor = {'s': 1.0, 'min': 60.0, 'h': 3600.0}[unit]
+    unit, factor = resolve_time_unit(time_unit)
     format_key = str(fmt).strip().lower()
     if format_key not in {'csv', 'json'}:
         raise ValueError("fmt must be 'csv' or 'json'.")
@@ -1964,7 +1979,7 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
     if repeat is not None and repeat['remaining'] == 0:
         notes.append('Only one cycle exists; no repetition row was written.')
 
-    unit_label = {'s': 's', 'min': 'min', 'h': 'h'}[unit]
+    unit_label = unit
     rows = []
 
     def append_rows(curve, points, value_unit, kind_key='kind'):
@@ -2795,7 +2810,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                                           filetypes=[('CSV', '*.csv')])
         if path:
             try:
-                export_cycle1_csv(path, state['timeline'], state['p'])
+                export_cycle1_csv(path, state['timeline'], state['p'],
+                                  time_unit=x_unit.get())
                 messagebox.showinfo('Export', f'Cycle 1 XY table saved:\n{path}')
             except OSError as exc:
                 messagebox.showerror('Export Failed', str(exc))
@@ -2817,7 +2833,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         body.pack(fill='both', expand=True)
 
         cycle_var = tk.StringVar(value='all')
-        unit_var = tk.StringVar(value='s')
+        unit_var = tk.StringVar(value=TIME_UNITS[x_unit.get()][1])
         format_var = tk.StringVar(value='csv')
         whole_var = tk.BooleanVar(value=False)
         ttk.Label(body, text='Cycle').grid(row=0, column=0, sticky='w', pady=4)
@@ -2826,7 +2842,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                      + ['first + repeat']).grid(row=0, column=1, sticky='ew', pady=4)
         ttk.Label(body, text='Time unit').grid(row=1, column=0, sticky='w', pady=4)
         ttk.Combobox(body, textvariable=unit_var, state='readonly', width=20,
-                     values=['s', 'min', 'h']).grid(row=1, column=1, sticky='ew', pady=4)
+                     values=[symbol for _, symbol in TIME_UNITS.values()]).grid(row=1, column=1, sticky='ew', pady=4)
         ttk.Label(body, text='Format').grid(row=2, column=0, sticky='w', pady=4)
         ttk.Combobox(body, textvariable=format_var, state='readonly', width=20,
                      values=['csv', 'json']).grid(row=2, column=1, sticky='ew', pady=4)
@@ -2956,8 +2972,8 @@ def main():
     parser.add_argument('--breakpoints', metavar='PFAD', help='Export exact phase-derived breakpoints as CSV or JSON')
     parser.add_argument('--cycle', default=None,
                         help="Cycle number for --breakpoints, or 'first_plus_repeat'")
-    parser.add_argument('--time-unit', choices=['s', 'min', 'h'], default='s',
-                        help='Time unit for --breakpoints (default: s)')
+    parser.add_argument('--time-unit', choices=[symbol for _, symbol in TIME_UNITS.values()], default='s',
+                        help='Time unit for --cycle1 and --breakpoints (default: s)')
     parser.add_argument('--whole-seconds', action='store_true',
                         help='Round --breakpoints times to whole seconds')
     parser.add_argument('--format', choices=['csv', 'json'], default=None,
@@ -2983,9 +2999,10 @@ def main():
             export_csv(args.example, iter_samples(timeline, p))
             print(f'{args.example}: {point_count} Points, {timeline.duration_s/3600:g} Hours')
         if args.cycle1:
-            info = export_cycle1_csv(args.cycle1, timeline, p)
+            info = export_cycle1_csv(args.cycle1, timeline, p, time_unit=args.time_unit)
             print(f"{args.cycle1}: Cycle 1, {info['rows']} Points, "
-                  f"{info['cycles_total']} Cycles, {info['cycle_duration_s']/3600:g} Hours")
+                  f"{info['cycles_total']} Cycles, {info['cycle_duration_s']/3600:g} Hours, "
+                  f"x in {info['time_unit']}")
         if args.breakpoints:
             output_format = args.format
             if output_format is None:

@@ -2,9 +2,9 @@
 
 Reference configured by schema 4: `2.ENV_Test_Plan_Cp_r00v05(2).docx`.
 
-The referenced Word document is not present in this repository, so a direct
-line-by-line comparison cannot currently be performed. No operating mode was
-changed during the schema-4 migration.
+The referenced Word document is now available under `descriptions/` (added in
+commit c95eb4a), so a line-by-line comparison can be performed. No operating
+mode was changed during the schema-4 migration.
 
 Voltage mapping implemented from `global.voltage`:
 
