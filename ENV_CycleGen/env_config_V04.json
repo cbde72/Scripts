@@ -139,7 +139,6 @@
         "standby_mode": "3.1"
       },
       "overrides": {
-        "load_pause_seconds": 16.5,
         "x_axis_unit": "Hours"
       }
     },

@@ -541,7 +541,6 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config_V04.json')
 COMMON_KEYS = 'humidity_rh active_mode standby_mode'.split()
 CSV_KEYS = ['sample_seconds']
 ACTUATOR_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_pause_seconds load_close_seconds load_max_percent'.split()
-ACTUATOR_VISIBLE_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_close_seconds load_pause_seconds'.split()
 VOLTAGE_KEYS = 'minimum_voltage_v nominal_voltage_v ua_voltage_v ub_voltage_v maximum_voltage_v off_voltage_v'.split()
 CHART_KEYS = ('tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step_seconds x_axis_end_seconds '
               'temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c '
