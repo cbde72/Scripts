@@ -876,6 +876,7 @@ class OverallConfigurationTests(unittest.TestCase):
         import copy, json, os
         from env_cycle_generator import default_configuration, load_configuration, ACTUATOR_KEYS
         config = default_configuration()
+        config.pop('actuator_migrated_to_visible', None)
         # Put actuator keys in unvisible
         for k in ACTUATOR_KEYS:
             config['global']['actuator']['unvisible'][k] = config['global']['actuator']['visible'].pop(k)

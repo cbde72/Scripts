@@ -605,7 +605,8 @@ def default_configuration():
             'visible': {key: defaults[key] for key in keys if key in GLOBAL_VISIBLE_KEYS},
             'unvisible': {key: defaults[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
     config = {'schema_version':4, 'source_document':SOURCE_DOCUMENT,
-              'global': global_config, 'tests':{}}
+              'global': global_config, 'tests':{},
+              'actuator_migrated_to_visible': True}
     for tid in GENERATORS:
         values = asdict(default_parameters(tid))
         keys = list(dict.fromkeys(TEST_KEYS[tid].split()+COMMON_KEYS))

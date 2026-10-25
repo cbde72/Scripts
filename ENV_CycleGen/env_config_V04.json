@@ -224,5 +224,6 @@
         "climate_room_minutes": 45
       }
     }
-  }
+  },
+  "actuator_migrated_to_visible": true
 }
