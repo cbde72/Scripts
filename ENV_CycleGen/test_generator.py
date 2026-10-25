@@ -825,6 +825,71 @@ class BreakpointExportTests(unittest.TestCase):
 
 
 class OverallConfigurationTests(unittest.TestCase):
+    def test_promote_global_keys_moves_unvisible_to_visible(self):
+        from env_cycle_generator import default_configuration, promote_global_keys, ACTUATOR_KEYS
+        import copy
+        config = default_configuration()
+        # Move one key back to unvisible
+        config['global']['actuator']['unvisible']['load_open_seconds'] = config['global']['actuator']['visible'].pop('load_open_seconds')
+        changed = promote_global_keys(config, ACTUATOR_KEYS)
+        self.assertTrue(changed)
+        self.assertIn('load_open_seconds', config['global']['actuator']['visible'])
+        self.assertNotIn('load_open_seconds', config['global']['actuator']['unvisible'])
+        # Idempotent
+        changed2 = promote_global_keys(config, ACTUATOR_KEYS)
+        self.assertFalse(changed2)
+        # Other sections untouched
+        self.assertIn('sample_seconds', config['global']['csv']['visible'])
+
+    def test_load_configuration_promotes_actuator_keys_atomically(self):
+        import copy, json, os
+        from env_cycle_generator import default_configuration, load_configuration, ACTUATOR_KEYS
+        config = default_configuration()
+        # Put actuator keys in unvisible
+        for k in ACTUATOR_KEYS:
+            config['global']['actuator']['unvisible'][k] = config['global']['actuator']['visible'].pop(k)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cfg.json'
+            path.write_text(json.dumps(config, ensure_ascii=False), encoding='utf-8')
+            loaded = load_configuration(path)
+            for k in ACTUATOR_KEYS:
+                self.assertIn(k, loaded['global']['actuator']['visible'])
+                self.assertNotIn(k, loaded['global']['actuator']['unvisible'])
+            # File rewritten atomically (no .tmp left)
+            tmp_files = [f for f in os.listdir(directory) if f.endswith('.tmp')]
+            self.assertEqual(tmp_files, [])
+
+    def test_actuator_override_wins_without_changing_global(self):
+        from env_cycle_generator import default_configuration, parameters_from_configuration
+        config = default_configuration()
+        global_val = config['global']['actuator']['visible']['load_pause_seconds']
+        config['tests']['ENV_026']['overrides'] = {'load_pause_seconds': 99.0}
+        p = parameters_from_configuration(config, 'ENV_026')
+        self.assertEqual(p.load_pause_seconds, 99.0)
+        self.assertEqual(config['global']['actuator']['visible']['load_pause_seconds'], global_val)
+        p2 = parameters_from_configuration(config, 'ENV_013')
+        self.assertEqual(p2.load_pause_seconds, global_val)
+
+    def test_save_global_does_not_overwrite_when_test_override_flag_set(self):
+        import json
+        from env_cycle_generator import default_configuration, parameters_from_configuration, save_global_settings, save_current_test
+        config = default_configuration()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cfg.json'
+            path.write_text(json.dumps(config), encoding='utf-8')
+            p = parameters_from_configuration(config, 'ENV_026')
+            from dataclasses import replace
+            p_over = replace(p, load_hold_seconds=42.0)
+            save_current_test(path, p_over, override_keys={'load_hold_seconds'})
+            # Now save global with different value but override flag logic in GUI prevents it
+            # Simulate: save_global_settings should only write visible globals
+            p_global = replace(p_over, load_hold_seconds=7.5)
+            saved = save_global_settings(path, p_global)
+            # Global should be updated
+            self.assertEqual(saved['global']['actuator']['visible']['load_hold_seconds'], 7.5)
+            # Test override should still win for ENV_026
+            self.assertEqual(parameters_from_configuration(saved, 'ENV_026').load_hold_seconds, 42.0)
+
     def test_hidden_value_still_controls_generated_data(self):
         from env_cycle_generator import default_configuration,parameters_from_configuration
         config=default_configuration()
