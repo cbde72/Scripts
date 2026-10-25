@@ -844,7 +844,7 @@ class OverallConfigurationTests(unittest.TestCase):
             finally:
                 sys.stderr = old
             out = buf.getvalue()
-            self.assertIn('Automatisch verschoben', out)
+            self.assertIn('Automatically moved', out)
             self.assertIn('load_open_seconds', out)
             self.assertTrue(loaded.get('actuator_migrated_to_visible'))
             # Second load - no migration
@@ -854,7 +854,7 @@ class OverallConfigurationTests(unittest.TestCase):
                 loaded2 = load_configuration(path)
             finally:
                 sys.stderr = old
-            self.assertNotIn('Automatisch verschoben', buf2.getvalue())
+            self.assertNotIn('Automatically moved', buf2.getvalue())
 
     def test_promote_global_keys_moves_unvisible_to_visible(self):
         from env_cycle_generator import default_configuration, promote_global_keys, ACTUATOR_KEYS
