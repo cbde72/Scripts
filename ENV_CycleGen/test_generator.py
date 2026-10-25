@@ -946,6 +946,70 @@ class OverallConfigurationTests(unittest.TestCase):
             import shutil
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_gui_layout_smoke(self):
+        import os, time
+        try:
+            import tkinter as tk
+        except Exception:
+            self.skipTest('tkinter not available')
+        if not os.environ.get('DISPLAY') and os.name != 'nt':
+            self.skipTest('no display')
+        from env_cycle_generator import launch_gui
+
+        def walk(w):
+            yield w
+            for c in w.winfo_children():
+                yield from walk(c)
+
+        gui_root = None
+        try:
+            # launch_gui creates its own root
+            gui_root = launch_gui()
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                try:
+                    gui_root.update()
+                except Exception:
+                    break
+                time.sleep(0.01)
+            # find form_host
+            form_hosts = []
+            for w in walk(gui_root):
+                try:
+                    if isinstance(w, tk.LabelFrame) and w.cget('text') == 'Test Parameters':
+                        form_hosts.append(w)
+                except Exception:
+                    pass
+            self.assertTrue(form_hosts)
+            self.assertGreaterEqual(form_hosts[0].winfo_width(), 220)
+            # find Apply Axis button
+            apply_axes = []
+            for w in walk(gui_root):
+                try:
+                    if isinstance(w, tk.Button) and w.cget('text') == 'Apply Axis':
+                        apply_axes.append(w)
+                except Exception:
+                    pass
+            self.assertTrue(apply_axes)
+            btn = apply_axes[0]
+            self.assertTrue(btn.winfo_viewable())
+            self.assertTrue(btn.winfo_rootx() + btn.winfo_width() <= gui_root.winfo_width() + 80)
+            # find Time Unit combobox
+            time_units = []
+            for w in walk(gui_root):
+                try:
+                    if isinstance(w, tk.ttk.Combobox) and w.winfo_viewable():
+                        time_units.append(w)
+                except Exception:
+                    pass
+            self.assertTrue(time_units)
+        finally:
+            try:
+                if gui_root is not None:
+                    gui_root.destroy()
+            except Exception:
+                pass
+
     def test_hidden_value_still_controls_generated_data(self):
         from env_cycle_generator import default_configuration,parameters_from_configuration
         config=default_configuration()

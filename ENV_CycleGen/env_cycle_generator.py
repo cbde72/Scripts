@@ -2115,11 +2115,12 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
     }
 
 
-def launch_gui(config_path=DEFAULT_CONFIG_PATH):
+def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
-    root = tk.Tk()
+    if root is None:
+        root = tk.Tk()
     root.title('ENV Cycle Generator V04 · Temperature and Humidity Profiles')
     root.geometry('1300x980')
     root.minsize(900, 650)
