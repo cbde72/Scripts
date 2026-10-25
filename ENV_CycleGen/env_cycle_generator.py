@@ -2534,6 +2534,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         except (ValueError, OverflowError):
             return
         unit_factor, unit_symbol = TIME_UNITS[x_unit.get()]
+        state['unit_factor'] = unit_factor
         first_phase = max(0, bisect.bisect_right(timeline.starts, start)-1)
         last_phase = bisect.bisect_left(timeline.starts, data_end)
         segments = []
