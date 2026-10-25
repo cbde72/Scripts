@@ -2284,7 +2284,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
             new_end = convert_axis_input(x_end.get(), old_unit, new_unit)
         except (ValueError, OverflowError):
             x_unit.set(old_unit)
-            axis_feedback.set('Correct X Start / X Step / X End before changing Time Unit. Previous unit remains active.')
             return
         x_start.set(new_start)
         x_step.set(new_step)
@@ -2496,8 +2495,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         load_schedule = timeline.load_schedule
         try:
             axis_start, axis_step, axis_end = read_axis()
-        except (ValueError, OverflowError) as exc:
-            axis_feedback.set(str(exc))
+        except (ValueError, OverflowError):
             return
         base_start, base_end = 0.0, timeline.duration_s
         if chart_view.get() == 'Single Cycle':
@@ -2516,7 +2514,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         available_duration = base_end-base_start
         requested_end = available_duration if axis_end is None else axis_end
         if not 0 <= axis_start < requested_end <= available_duration:
-            axis_feedback.set(f'Require 0 ≤ X Start < X End ≤ {available_duration/TIME_UNITS[x_unit.get()][0]:.6g} {TIME_UNITS[x_unit.get()][1]}. Previous view remains active.')
             return
         start, end = base_start+axis_start, base_start+requested_end
         view = state.get('view')
@@ -2534,12 +2531,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         state['data_end'] = data_end
         try:
             tick_values, tick_stride = axis_ticks(end-start, axis_step)
-        except (ValueError, OverflowError) as exc:
-            axis_feedback.set(str(exc))
+        except (ValueError, OverflowError):
             return
         unit_factor, unit_symbol = TIME_UNITS[x_unit.get()]
-        axis_feedback.set(f'[{unit_symbol}] {start/unit_factor:.6g}–{end/unit_factor:.6g} · '
-                          f'Mouse wheel=zoom X/Y · Ctrl+wheel=X only · Shift+drag=pan')
         first_phase = max(0, bisect.bisect_right(timeline.starts, start)-1)
         last_phase = bisect.bisect_left(timeline.starts, data_end)
         segments = []
