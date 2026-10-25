@@ -930,6 +930,22 @@ class OverallConfigurationTests(unittest.TestCase):
         for f in ['Auf:', 'Zu:', 'Mausrad', 'Strg+', 'nur X', 'Anwenden', 'Schritt', 'Haltepunkt']:
             self.assertNotIn(f, gui)
 
+    def test_real_config_not_rewritten_on_load(self):
+        import tempfile
+        from pathlib import Path
+        from env_cycle_generator import load_configuration
+        src = Path('env_config_V04.json')
+        data = src.read_text(encoding='utf-8')
+        d = tempfile.mkdtemp()
+        try:
+            p = Path(d) / 'cfg.json'
+            p.write_text(data, encoding='utf-8')
+            load_configuration(p)
+            self.assertEqual(p.read_text(encoding='utf-8'), data)
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_hidden_value_still_controls_generated_data(self):
         from env_cycle_generator import default_configuration,parameters_from_configuration
         config=default_configuration()
