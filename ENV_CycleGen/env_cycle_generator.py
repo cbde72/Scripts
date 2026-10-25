@@ -552,7 +552,9 @@ GLOBAL_SECTION_KEYS = {'csv': CSV_KEYS, 'actuator': ACTUATOR_KEYS,
                        'chart': CHART_KEYS, 'voltage': VOLTAGE_KEYS}
 GLOBAL_KEYS = set(key for keys in GLOBAL_SECTION_KEYS.values() for key in keys)
 GLOBAL_VISIBLE_KEYS = {'sample_seconds', 'tracker_step_seconds', 'x_axis_unit',
-                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds'}
+                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds',
+                       'load_start_delay_seconds', 'load_open_seconds', 'load_hold_seconds',
+                       'load_pause_seconds', 'load_close_seconds', 'load_max_percent'}
 TEST_KEYS = {
  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
@@ -589,6 +591,7 @@ PARAMETER_LABELS = {
  'load_open_seconds':'Actuator Opening Time [s]', 'load_hold_seconds':'Actuator Hold Time [s]',
  'load_close_seconds':'Actuator Closing Time [s]', 'load_pause_seconds':'Actuator Pause Time [s]',
  'load_start_delay_seconds':'Actuator Start Delay [s]',
+ 'load_max_percent':'Actuator Max Opening [%]',
 }
 
 def parameter_label(key):
@@ -686,6 +689,17 @@ def visible_global_keys(config):
     return [key for section in config['global'].values() for key in section['visible']]
 
 
+def promote_global_keys(config, keys):
+    """Move global keys to the visible section so the GUI can edit them."""
+    changed = False
+    for section in config['global'].values():
+        for key in keys:
+            if key in section['unvisible']:
+                section['visible'][key] = section['unvisible'].pop(key)
+                changed = True
+    return changed
+
+
 def parameters_from_configuration(config, test_id):
     if config.get('schema_version') != 4 or not isinstance(config.get('tests'),dict):
         raise ValueError('Expected a schema_version 4 overall configuration with global and tests sections.')
@@ -758,6 +772,8 @@ def load_configuration(path=DEFAULT_CONFIG_PATH):
         normalized = normalize_schema4(config)
         rewrite = rewrite or normalized != config
         config = normalized
+        if promote_global_keys(config, ACTUATOR_KEYS):
+            rewrite = True
     if rewrite:
         temporary = path.with_name(path.name+'.schema4.tmp')
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
@@ -2100,120 +2116,127 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         messagebox.showerror('Configuration Error', str(exc))
         root.destroy()
         return
-    outer = ttk.Frame(root, padding=14)
+    outer = ttk.Frame(root, padding=6)
     outer.pack(fill='both', expand=True)
     title = tk.StringVar()
-    ttk.Label(outer, textvariable=title, font=('Arial', 16, 'bold')).pack(anchor='w')
+    ttk.Label(outer, textvariable=title, font=('Arial', 13, 'bold')).pack(anchor='w')
     selector_row = ttk.Frame(outer)
-    selector_row.pack(fill='x', pady=8)
-    ttk.Label(selector_row, text='Test ID').pack(side='left', padx=(0, 8))
+    selector_row.pack(fill='x', pady=2)
+    ttk.Label(selector_row, text='Test ID').pack(side='left', padx=(0, 4))
     selection_variable = tk.StringVar(value='ENV_026 — '+TEST_NAMES['ENV_026'])
     class Selection:
         def get(self): return selection_variable.get().split(' — ',1)[0]
         def set(self, test_id): selection_variable.set(test_id+' — '+TEST_NAMES[test_id])
     selected = Selection()
     selector = ttk.Combobox(selector_row, textvariable=selection_variable,
-                           values=[tid+' — '+TEST_NAMES[tid] for tid in TEST_NAMES], state='readonly', width=56)
+                           values=[tid+' — '+TEST_NAMES[tid] for tid in TEST_NAMES], state='readonly', width=40)
     selector.pack(side='left')
     def show_description():
         try:
             open_description(selected.get())
         except (ValueError, OSError) as exc:
             messagebox.showerror('Show Description', str(exc))
-    ttk.Button(selector_row, text='Show Description', command=show_description).pack(side='left', padx=10)
+    ttk.Button(selector_row, text='Beschreibung', command=show_description).pack(side='left', padx=6)
     body = ttk.Frame(outer)
     body.pack(fill='both', expand=True)
-    form_host = ttk.LabelFrame(body, text='Test Parameters')
-    form_host.pack(side='left', fill='y', padx=(0, 12))
-    form_canvas = tk.Canvas(form_host, width=420, highlightthickness=0)
+    form_host = ttk.LabelFrame(body, text='Parameter', width=340)
+    form_host.pack(side='left', fill='y')
+    form_host.pack_propagate(False)
+    form_canvas = tk.Canvas(form_host, width=280, highlightthickness=0)
     form_scroll = ttk.Scrollbar(form_host, orient='vertical', command=form_canvas.yview)
     form_canvas.configure(yscrollcommand=form_scroll.set)
     form_scroll.pack(side='right', fill='y')
     form_canvas.pack(side='left', fill='both', expand=True)
-    form = ttk.Frame(form_canvas, padding=10)
+    form = ttk.Frame(form_canvas, padding=4)
     form_window = form_canvas.create_window((0,0), window=form, anchor='nw')
     form.bind('<Configure>', lambda event: form_canvas.configure(scrollregion=form_canvas.bbox('all')))
     form_canvas.bind('<Configure>', lambda event: form_canvas.itemconfigure(form_window,width=event.width))
+    sash = tk.Frame(body, width=12, cursor='sb_h_double_arrow')
+    sash.configure(bg='#c9d1d9', bd=1, relief='raised', highlightthickness=1,
+                    highlightbackground='#6f7a87', highlightcolor='#6f7a87')
+    sash.pack(side='left', fill='y', padx=2)
+    grip = tk.Frame(sash, width=4, height=40, bg='#7f8a96')
+    grip.place(relx=0.5, rely=0.5, anchor='center')
     view = ttk.Frame(body)
     view.pack(side='left', fill='both', expand=True)
     controls = ttk.Frame(view)
-    controls.pack(fill='x', pady=(0, 6))
-    # Second row for axis and tracker fields so the bar never exceeds the window width.
+    controls.pack(fill='x', pady=(0, 1))
     controls2 = ttk.Frame(view)
-    controls2.pack(fill='x', pady=(0, 6))
-    controls3 = ttk.Frame(view)
-    controls3.pack(fill='x', pady=(0, 6))
-    ttk.Label(controls, text='Chart View').pack(side='left')
+    controls2.pack(fill='x', pady=(0, 1))
+    ttk.Label(controls, text='Ansicht').pack(side='left')
     chart_view = tk.StringVar(value='Complete Profile')
     chart_choice = ttk.Combobox(controls, textvariable=chart_view, state='readonly',
-                               values=['Complete Profile', 'Single Cycle'], width=18)
-    chart_choice.pack(side='left', padx=8)
-    ttk.Label(controls, text='Cycle').pack(side='left')
+                               values=['Complete Profile', 'Single Cycle'], width=12)
+    chart_choice.pack(side='left', padx=2)
+    ttk.Label(controls, text='Zyklus').pack(side='left')
     preview_cycle = tk.StringVar(value='1')
-    preview_spin = ttk.Spinbox(controls, from_=1, to=10000, textvariable=preview_cycle, width=7)
-    preview_spin.pack(side='left', padx=8)
-    unit_label = ttk.Label(controls, text='Time Unit')
-    unit_label.pack(side='left', padx=(8, 0))
+    preview_spin = ttk.Spinbox(controls, from_=1, to=10000, textvariable=preview_cycle, width=5)
+    preview_spin.pack(side='left', padx=2)
+    unit_label = ttk.Label(controls, text='Einheit')
+    unit_label.pack(side='left', padx=(6, 0))
     x_unit = tk.StringVar(value='Seconds')
-    unit_choice = ttk.Combobox(controls, textvariable=x_unit, values=list(TIME_UNITS), state='readonly', width=10)
-    unit_choice.pack(side='left', padx=6)
-    axis_controls = ttk.Frame(controls2)
+    unit_choice = ttk.Combobox(controls, textvariable=x_unit, values=list(TIME_UNITS), state='readonly', width=8)
+    unit_choice.pack(side='left', padx=2)
+    axis_controls = ttk.Frame(controls)
     axis_controls.pack(side='left')
-    x_start_label = tk.StringVar(value='X Start [s]')
+    x_start_label = tk.StringVar(value='X von [s]')
     x_start_widget_label = ttk.Label(axis_controls, textvariable=x_start_label)
     x_start_widget_label.pack(side='left')
     x_start = tk.StringVar(value='0')
-    x_start_entry = ttk.Entry(axis_controls, textvariable=x_start, width=9)
-    x_start_entry.pack(side='left', padx=6)
-    x_end_label = tk.StringVar(value='X End [s]')
+    x_start_entry = ttk.Entry(axis_controls, textvariable=x_start, width=6)
+    x_start_entry.pack(side='left', padx=1)
+    x_end_label = tk.StringVar(value='bis [s]')
     x_end_widget_label = ttk.Label(axis_controls, textvariable=x_end_label)
     x_end_widget_label.pack(side='left')
     x_end = tk.StringVar(value='')
-    x_end_entry = ttk.Entry(axis_controls, textvariable=x_end, width=11)
-    x_end_entry.pack(side='left', padx=6)
-    x_step_label = tk.StringVar(value='X Step [s]')
+    x_end_entry = ttk.Entry(axis_controls, textvariable=x_end, width=6)
+    x_end_entry.pack(side='left', padx=1)
+    x_step_label = tk.StringVar(value='Step [s]')
     x_step_widget_label = ttk.Label(axis_controls, textvariable=x_step_label)
     x_step_widget_label.pack(side='left')
     x_step = tk.StringVar(value='')
-    x_step_entry = ttk.Entry(axis_controls, textvariable=x_step, width=9)
-    x_step_entry.pack(side='left', padx=6)
-    axis_apply_button = ttk.Button(axis_controls, text='Apply Axis', command=lambda: plot())
-    axis_apply_button.pack(side='left')
-    axis_feedback = tk.StringVar(value='Blank = automatic. Chart time always starts at 0 s.')
-    ttk.Label(view, textvariable=axis_feedback).pack(anchor='w', pady=(0, 4))
-    tracker_controls = ttk.Frame(controls3)
+    x_step_entry = ttk.Entry(axis_controls, textvariable=x_step, width=6)
+    x_step_entry.pack(side='left', padx=1)
+    axis_apply_button = ttk.Button(axis_controls, text='Anwenden', command=lambda: reset_view())
+    axis_apply_button.pack(side='left', padx=(2, 0))
+    axis_feedback = tk.StringVar(value='Mausrad = Zoom X/Y · Strg+Mausrad = nur X · Shift+Ziehen = Pan')
+    ttk.Label(view, textvariable=axis_feedback, font=('Arial', 8)).pack(anchor='w', pady=(0, 1))
+    tracker_controls = ttk.Frame(controls2)
     tracker_controls.pack(side='left')
-    tracker_label = ttk.Label(tracker_controls, text='Tracker Step [s]')
+    tracker_label = ttk.Label(tracker_controls, text='Tracker [s]')
     tracker_label.pack(side='left')
     tracker_step = tk.StringVar(value='60')
-    tracker_entry = ttk.Entry(tracker_controls, textvariable=tracker_step, width=10)
-    tracker_entry.pack(side='left', padx=8)
-    tracker_apply = ttk.Button(tracker_controls, text='Apply', command=lambda: apply_tracker_step())
-    tracker_apply.pack(side='left')
-    ttk.Button(tracker_controls, text='Clear Markers', command=lambda: clear_markers()).pack(side='left', padx=8)
-    step_feedback = tk.StringVar(value='0 = continuous; Enter or Apply to confirm.')
-    ttk.Label(view, textvariable=step_feedback).pack(anchor='w', pady=(0, 4))
+    tracker_entry = ttk.Entry(tracker_controls, textvariable=tracker_step, width=6)
+    tracker_entry.pack(side='left', padx=2)
+    tracker_apply = ttk.Button(tracker_controls, text='Anwenden', command=lambda: apply_tracker_step())
+    tracker_apply.pack(side='left', padx=(0, 2))
+    ttk.Button(tracker_controls, text='Marker löschen', command=lambda: clear_markers()).pack(side='left', padx=2)
+    ttk.Button(tracker_controls, text='Gesamtprofil', command=lambda: set_chart_view('Complete Profile')).pack(side='left', padx=2)
+    ttk.Button(tracker_controls, text='Akt. Zyklus', command=lambda: set_chart_view('Single Cycle')).pack(side='left', padx=2)
+    ttk.Button(tracker_controls, text='Zoom/Pan Reset', command=lambda: reset_view()).pack(side='left', padx=2)
+    step_feedback = tk.StringVar(value='0 = kontinuierlich; Enter oder Anwenden.')
+    ttk.Label(view, textvariable=step_feedback, font=('Arial', 8)).pack(anchor='w', pady=(0, 1))
     canvas = tk.Canvas(view, background='white', highlightthickness=1, highlightbackground='#d2d7dd')
     canvas.pack(fill='both', expand=True)
     tracker_hint = 'Move the mouse over a chart to view all values.'
     tracker_text = tk.StringVar(value=tracker_hint)
     tracker_display = tk.Frame(view, background='white')
-    tracker_display.pack(fill='x', pady=(8, 0))
+    tracker_display.pack(fill='x', pady=(2, 0))
     tracker_labels = []
     for color in ('#111111', '#c24436', '#2672ad', '#389064', '#d28a18'):
-        label = tk.Label(tracker_display, text='', fg=color, bg='white', font=('Arial', 10, 'bold' if color == '#111111' else 'normal'))
-        label.pack(side='left', padx=(0, 18))
+        label = tk.Label(tracker_display, text='', fg=color, bg='white', font=('Arial', 8, 'bold' if color == '#111111' else 'normal'))
+        label.pack(side='left', padx=(0, 10))
         tracker_labels.append(label)
     actuator_count_text = tk.StringVar(value='Actuator Auf: 0  |  Zu: 0')
     tk.Label(view, textvariable=actuator_count_text, foreground='#c00000',
-             font=('Arial', 20, 'bold')).pack(anchor='e', pady=(2, 4))
+             font=('Arial', 13, 'bold')).pack(anchor='e', pady=(0, 1))
     marker_hint = 'Ctrl+Click: set M1. Click: set / move M2.\nTime difference is displayed in minutes.'
     marker_text = tk.StringVar(value=marker_hint)
-    ttk.Label(view, textvariable=marker_text, font=('Arial', 10), justify='left').pack(anchor='w', pady=(5, 0))
+    ttk.Label(view, textvariable=marker_text, font=('Arial', 8), justify='left').pack(anchor='w', pady=(1, 0))
     status = tk.StringVar()
-    ttk.Label(view, textvariable=status, wraplength=650).pack(anchor='w', pady=8)
+    ttk.Label(view, textvariable=status, wraplength=1100, font=('Arial', 8)).pack(anchor='w', pady=1)
     source_note = tk.StringVar()
-    ttk.Label(view, textvariable=source_note, wraplength=650, justify='left').pack(anchor='w')
+    ttk.Label(view, textvariable=source_note, wraplength=1100, justify='left', font=('Arial', 8)).pack(anchor='w')
     state = {'recipes': {tid:parameters_from_configuration(configuration,tid) for tid in GENERATORS},
              'configuration':configuration, 'config_path':Path(config_path),
              'tracker_step':60.0, 'axis_unit':'Seconds',
@@ -2238,9 +2261,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
 
     def update_unit_labels():
         symbol = TIME_UNITS[x_unit.get()][1]
-        x_start_label.set(f'X Start [{symbol}]')
-        x_step_label.set(f'X Step [{symbol}]')
-        x_end_label.set(f'X End [{symbol}]')
+        x_start_label.set(f'von [{symbol}]')
+        x_step_label.set(f'Step [{symbol}]')
+        x_end_label.set(f'bis [{symbol}]')
 
     def change_axis_unit(event=None):
         old_unit, new_unit = state['axis_unit'], x_unit.get()
@@ -2257,6 +2280,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         x_end.set(new_end)
         state['axis_unit'] = new_unit
         update_unit_labels()
+        state.pop('view', None)
         plot()
 
     def read_parameters():
@@ -2486,6 +2510,15 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             axis_feedback.set(f'Require 0 ≤ X Start < X End ≤ {available_duration/TIME_UNITS[x_unit.get()][0]:.6g} {TIME_UNITS[x_unit.get()][1]}. Previous view remains active.')
             return
         start, end = base_start+axis_start, base_start+requested_end
+        view = state.get('view')
+        if view is None or view.get('base') != (base_start, base_end):
+            state['view'] = view = {'base': (base_start, base_end),
+                                    'start': start, 'end': end, 'y': {}}
+        else:
+            start, end = view['start'], view['end']
+            if not (base_start-1e-9 <= start < end <= base_end+1e-9) or end-start < 1e-6:
+                start, end = base_start, base_end
+                view['start'], view['end'] = start, end
         data_end = end
         canvas.delete('all')
         state.pop('geometry', None)
@@ -2496,8 +2529,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             axis_feedback.set(str(exc))
             return
         unit_factor, unit_symbol = TIME_UNITS[x_unit.get()]
-        axis_feedback.set(f'Time [{unit_symbol}], X Start {start/unit_factor:.6g}. Blank X End = profile end.' if tick_stride == 1 else
-                          f'Time [{unit_symbol}]. Showing every {tick_stride}th X Step to keep labels readable.')
+        axis_feedback.set(f'[{unit_symbol}] {start/unit_factor:.6g}–{end/unit_factor:.6g} · '
+                          f'Mausrad=Zoom X/Y · Strg+Mausrad=nur X · Shift+Ziehen=Pan')
         first_phase = max(0, bisect.bisect_right(timeline.starts, start)-1)
         last_phase = bisect.bisect_left(timeline.starts, data_end)
         segments = []
@@ -2551,6 +2584,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 lo, hi = (min(nums), max(nums)) if nums else (0, 100)
                 pad = 0.5 if categories else max((hi-lo)*0.08, 2)
                 lo, hi, tick_step = lo-pad, hi+pad, None
+            override = view['y'].get(k) if view else None
+            if override and len(override) == 2 and override[1] > override[0]:
+                lo, hi = override
             mappings.append((lo, hi, ytop, ybot, categories, color))
             y = lambda v: ybot-(v-lo)/(hi-lo)*(ybot-ytop)
             ticks = list(enumerate(categories)) if categories else [(v, f'{v:g}') for v in ([lo + i*tick_step for i in range(round((hi-lo)/tick_step)+1)] if tick_step else [lo, hi])]
@@ -2623,6 +2659,135 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
 
         state['plot_after_id'] = root.after(delay, plot_pending)
 
+    # ------------------------------------------------------------------
+    # Zoom / Pan
+    # ------------------------------------------------------------------
+    def reset_view():
+        state.pop('view', None)
+        state.pop('pan', None)
+        plot()
+
+    def axis_changed():
+        state.pop('view', None)
+        plot_later()
+
+    def axis_applied():
+        state.pop('view', None)
+        plot()
+
+    def set_chart_view(mode):
+        chart_view.set(mode)
+        reset_view()
+
+    def _wheel_delta(event):
+        delta = getattr(event, 'delta', 0)
+        if not delta:
+            if getattr(event, 'num', None) == 4:
+                delta = 120
+            elif getattr(event, 'num', None) == 5:
+                delta = -120
+        return delta
+
+    def zoom_view(event):
+        if 'geometry' not in state or 'view' not in state:
+            return 'break'
+        delta = _wheel_delta(event)
+        if not delta:
+            return 'break'
+        factor = 0.85 if delta > 0 else 1/0.85
+        left, right, top, bottom, mappings, start, end = state['geometry']
+        if right <= left or end <= start:
+            return 'break'
+        view = state['view']
+        base_start, base_end = view['base']
+        x_fraction = min(1.0, max(0.0, (event.x-left)/(right-left)))
+        anchor = start + x_fraction*(end-start)
+        new_start = max(base_start, anchor-(anchor-start)*factor)
+        new_end = min(base_end, anchor+(end-anchor)*factor)
+        if new_end-new_start >= 1e-6:
+            view['start'], view['end'] = new_start, new_end
+        if not (getattr(event, 'state', 0) & 0x0004):  # Ctrl = X only
+            hovered = None
+            for index, mapping in enumerate(mappings):
+                if mapping and mapping[2]-2 <= event.y <= mapping[3]+2:
+                    hovered = index
+                    break
+            if hovered is not None:
+                indices = [hovered]
+            else:
+                indices = list(range(len(mappings)))
+            for index in indices:
+                mapping = mappings[index]
+                if not mapping:
+                    continue
+                lo, hi, ytop, ybot, categories, color = mapping
+                if ybot == ytop:
+                    continue
+                lo, hi = view['y'].get(index, (lo, hi))
+                if index == hovered:
+                    y_fraction = min(1.0, max(0.0, (ybot-event.y)/(ybot-ytop)))
+                    anchor_y = lo + y_fraction*(hi-lo)
+                else:
+                    anchor_y = (lo+hi)/2
+                new_lo = anchor_y-(anchor_y-lo)*factor
+                new_hi = anchor_y+(hi-anchor_y)*factor
+                if new_hi-new_lo > 1e-9:
+                    view['y'][index] = (new_lo, new_hi)
+        plot()
+        return 'break'
+
+    def pan_start(event):
+        if 'geometry' not in state or 'view' not in state:
+            return 'break'
+        state['pan'] = {'x': event.x, 'y': event.y,
+                        'start': state['view']['start'],
+                        'end': state['view']['end'],
+                        'y_ranges': dict(state['view']['y'])}
+        canvas.configure(cursor='fleur')
+        return 'break'
+
+    def pan_move(event):
+        pan = state.get('pan')
+        if not pan or 'geometry' not in state:
+            return 'break'
+        left, right, top, bottom, mappings, start, end = state['geometry']
+        if right <= left:
+            return 'break'
+        view = state['view']
+        base_start, base_end = view['base']
+        span = pan['end']-pan['start']
+        shift = -(event.x-pan['x'])/(right-left)*span
+        new_start = pan['start']+shift
+        new_end = pan['end']+shift
+        if new_start < base_start:
+            new_start, new_end = base_start, base_start+span
+        elif new_end > base_end:
+            new_start, new_end = base_end-span, base_end
+        view['start'], view['end'] = new_start, new_end
+        dy = event.y-pan['y']
+        view['y'] = dict(pan['y_ranges'])
+        for index, mapping in enumerate(mappings):
+            if not mapping:
+                continue
+            lo, hi, ytop, ybot, categories, color = mapping
+            if ybot == ytop:
+                continue
+            base_lo, base_hi = pan['y_ranges'].get(index, (lo, hi))
+            delta_y = dy*(base_hi-base_lo)/(ybot-ytop)
+            view['y'][index] = (base_lo+delta_y, base_hi+delta_y)
+        plot()
+        return 'break'
+
+    def pan_end(event):
+        state.pop('pan', None)
+        canvas.configure(cursor='')
+        return 'break'
+
+    def canvas_press(event):
+        if getattr(event, 'state', 0) & 0x1:
+            return pan_start(event)
+        return place_marker(event)
+
     def update(silent=False):
         pending_update = state.pop('update_after_id', None)
         if pending_update is not None:
@@ -2642,6 +2807,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             markers.clear()
         state.update(p=p, phases=phases, timeline=timeline,
                      tracker_step=p.tracker_step_seconds)
+        state.pop('view', None)
         openings, closings = actuator_counts(timeline, p)
         actuator_count_text.set(f'Actuator Auf: {openings}  |  Zu: {closings}')
         step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
@@ -2727,7 +2893,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if 'tracker_step_seconds' in global_visible:
             tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
         row = 0
-        for key in list(visible) + visible_global_keys(state['configuration']):
+        global_visible_order = visible_global_keys(state['configuration'])
+        for key in list(visible) + [k for k in global_visible_order if k not in ACTUATOR_KEYS]:
             if key in SPECIAL_CONTROLS: continue
             value = getattr(p,key)
             ttk.Label(form,text=parameter_label(key),wraplength=250).grid(row=row,column=0,sticky='w',padx=(0,8),pady=5)
@@ -2748,19 +2915,43 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 widget.bind('<Return>', update_now)
                 widget.bind('<FocusOut>', flush_pending_update)
             row += 1
-        global_visible_order = visible_global_keys(state['configuration'])
-        if global_visible_order:
+        selected_overrides = state['override_selections'].setdefault(p.test_id, set())
+        general_overrides = [key for key in global_visible_order if key not in ACTUATOR_KEYS]
+        if general_overrides:
             ttk.Separator(form, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=(10, 6))
             row += 1
             ttk.Label(form, text='Explicit Test Overrides').grid(row=row, column=0, columnspan=3, sticky='w')
             row += 1
-            selected_overrides = state['override_selections'].setdefault(p.test_id, set())
-            for key in global_visible_order:
+            for key in general_overrides:
                 flag = tk.BooleanVar(value=key in selected_overrides)
                 override_vars[key] = flag
                 ttk.Checkbutton(form, text=parameter_label(key), variable=flag).grid(
                     row=row, column=0, columnspan=3, sticky='w', pady=2)
                 row += 1
+        ttk.Separator(form, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=(10, 4))
+        row += 1
+        ttk.Label(form, text='Aktuator-Parameter (global)',
+                  font=('Arial', 9, 'bold')).grid(row=row, column=0, columnspan=3, sticky='w')
+        row += 1
+        ttk.Label(form, text='Ohne Haken gilt der Wert global. Haken „Test“ überschreibt ihn nur für diesen Test.',
+                  font=('Arial', 8), wraplength=250, justify='left').grid(
+                      row=row, column=0, columnspan=3, sticky='w', pady=(0, 4))
+        row += 1
+        for key in ACTUATOR_KEYS:
+            cell = ttk.Frame(form)
+            cell.grid(row=row, column=0, columnspan=3, sticky='ew', pady=1)
+            ttk.Label(cell, text=parameter_label(key), wraplength=140).pack(side='left')
+            var = tk.StringVar(value=format(getattr(p, key), '.15g'))
+            values[key] = var
+            entry = ttk.Entry(cell, textvariable=var, width=8)
+            entry.pack(side='left', padx=(2, 4))
+            entry.bind('<KeyRelease>', update_later)
+            entry.bind('<Return>', update_now)
+            entry.bind('<FocusOut>', flush_pending_update)
+            flag = tk.BooleanVar(value=key in selected_overrides)
+            override_vars[key] = flag
+            ttk.Checkbutton(cell, text='Test', variable=flag).pack(side='left')
+            row += 1
         form_canvas.yview_moveto(0)
         notes = {
           'ENV_004':'Chapter 6 / Section 2.1: 48-V component: UN 48 V, UA 48 V, Umin 36 V, Umax 52 V. Mode 3.1 uses UA. Ramps and UN are configurable; transition rate remains an explicit assumption.',
@@ -2914,7 +3105,12 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     def save_global():
         if not update(): return
         try:
-            config = save_global_settings(state['config_path'], state['p'])
+            selected_overrides = {key for key,var in override_vars.items() if var.get()}
+            params = state['p']
+            if selected_overrides:
+                params = replace(params, **{key: state['global_values'][key]
+                                            for key in selected_overrides})
+            config = save_global_settings(state['config_path'], params)
             recipes = {tid:parameters_from_configuration(config,tid) for tid in GENERATORS}
             state.update(configuration=config, recipes=recipes,
                          global_values=flattened_global(config))
@@ -2956,16 +3152,60 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     canvas.bind('<Configure>', plot_later)
     canvas.bind('<Motion>', track_mouse)
     canvas.bind('<Leave>', hide_tracker)
-    canvas.bind('<Button-1>', place_marker)
+    canvas.bind('<Button-1>', canvas_press)
+    canvas.bind('<B1-Motion>', pan_move)
+    canvas.bind('<ButtonRelease-1>', pan_end)
+
+    def zoom_dispatch(event):
+        widget = getattr(event, 'widget', None)
+        if widget is not canvas:
+            try:
+                under = root.winfo_containing(event.x_root, event.y_root)
+            except Exception:
+                under = None
+            if under is not canvas:
+                return None
+        return zoom_view(event)
+
+    root.bind_all('<MouseWheel>', zoom_dispatch, add='+')
+    root.bind_all('<Button-4>', zoom_dispatch, add='+')
+    root.bind_all('<Button-5>', zoom_dispatch, add='+')
     tracker_entry.bind('<Return>', apply_tracker_step)
     tracker_entry.bind('<FocusOut>', apply_tracker_step)
     tracker_entry.bind('<KeyRelease>', apply_tracker_step_later)
-    x_step_entry.bind('<Return>', plot)
-    x_end_entry.bind('<Return>', plot)
-    x_start_entry.bind('<Return>', plot)
-    x_start_entry.bind('<KeyRelease>', plot_later)
-    x_step_entry.bind('<KeyRelease>', plot_later)
-    x_end_entry.bind('<KeyRelease>', plot_later)
+    x_step_entry.bind('<Return>', lambda event: axis_applied())
+    x_end_entry.bind('<Return>', lambda event: axis_applied())
+    x_start_entry.bind('<Return>', lambda event: axis_applied())
+    x_start_entry.bind('<KeyRelease>', lambda event: axis_changed())
+    x_step_entry.bind('<KeyRelease>', lambda event: axis_changed())
+    x_end_entry.bind('<KeyRelease>', lambda event: axis_changed())
+
+    def sash_start(event):
+        state['sash_drag'] = (event.x_root, form_host.winfo_width())
+        sash.configure(bg='#b8c2cc')
+        grip.configure(bg='#5f6b78')
+        return 'break'
+
+    def sash_move(event):
+        drag = state.get('sash_drag')
+        if not drag:
+            return 'break'
+        x0, width0 = drag
+        limit = max(240, body.winfo_width()-280)
+        width = max(200, min(limit, width0 + event.x_root - x0))
+        form_host.configure(width=width)
+        state['sash_width'] = width
+        return 'break'
+
+    def sash_end(event):
+        state.pop('sash_drag', None)
+        sash.configure(bg='#c9d1d9')
+        grip.configure(bg='#7f8a96')
+        return 'break'
+
+    sash.bind('<Button-1>', sash_start)
+    sash.bind('<B1-Motion>', sash_move)
+    sash.bind('<ButtonRelease-1>', sash_end)
     root.after(100, switch_test)
     root.mainloop()
 

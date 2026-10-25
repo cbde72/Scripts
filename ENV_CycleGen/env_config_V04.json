@@ -9,15 +9,15 @@
       }
     },
     "actuator": {
-      "visible": {},
-      "unvisible": {
+      "visible": {
         "load_start_delay_seconds": 1.0,
         "load_open_seconds": 1.0,
         "load_hold_seconds": 16.5,
         "load_pause_seconds": 16.5,
         "load_close_seconds": 1.0,
         "load_max_percent": 100.0
-      }
+      },
+      "unvisible": {}
     },
     "chart": {
       "visible": {
@@ -137,6 +137,10 @@
         "humidity_rh": 60,
         "active_mode": "3.2",
         "standby_mode": "3.1"
+      },
+      "overrides": {
+        "load_pause_seconds": 16.5,
+        "x_axis_unit": "Hours"
       }
     },
     "ENV_015": {
