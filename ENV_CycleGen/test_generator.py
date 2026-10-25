@@ -926,7 +926,7 @@ class OverallConfigurationTests(unittest.TestCase):
         start = s.find('def launch_gui')
         end = s.find('\ndef main', start)
         gui = s[start:end]
-        for f in ['Auf:', 'Zu:', 'Mausrad', 'Strg+']:
+        for f in ['Auf:', 'Zu:', 'Mausrad', 'Strg+', 'nur X', 'Anwenden', 'Schritt', 'Haltepunkt']:
             self.assertNotIn(f, gui)
 
     def test_hidden_value_still_controls_generated_data(self):
