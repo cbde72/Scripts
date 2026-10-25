@@ -2142,20 +2142,20 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         def set(self, test_id): selection_variable.set(test_id+' — '+TEST_NAMES[test_id])
     selected = Selection()
     selector = ttk.Combobox(selector_row, textvariable=selection_variable,
-                           values=[tid+' — '+TEST_NAMES[tid] for tid in TEST_NAMES], state='readonly', width=40)
+                           values=[tid+' — '+TEST_NAMES[tid] for tid in TEST_NAMES], state='readonly', width=48)
     selector.pack(side='left')
     def show_description():
         try:
             open_description(selected.get())
         except (ValueError, OSError) as exc:
-            messagebox.showerror('Show Description', str(exc))
+            messagebox.showerror('Beschreibung anzeigen', str(exc))
     ttk.Button(selector_row, text='Beschreibung', command=show_description).pack(side='left', padx=6)
     body = ttk.Frame(outer)
     body.pack(fill='both', expand=True)
-    form_host = ttk.LabelFrame(body, text='Parameter', width=340)
+    form_host = ttk.LabelFrame(body, text='Parameter')
     form_host.pack(side='left', fill='y')
     form_host.pack_propagate(False)
-    form_canvas = tk.Canvas(form_host, width=280, highlightthickness=0)
+    form_canvas = tk.Canvas(form_host, width=300, highlightthickness=0)
     form_scroll = ttk.Scrollbar(form_host, orient='vertical', command=form_canvas.yview)
     form_canvas.configure(yscrollcommand=form_scroll.set)
     form_scroll.pack(side='right', fill='y')
@@ -2177,9 +2177,14 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     controls2 = ttk.Frame(view)
     controls2.pack(fill='x', pady=(0, 1))
     ttk.Label(controls, text='Ansicht').pack(side='left')
+    CHART_VIEW_DISPLAY = {'Complete Profile': 'Gesamtprofil', 'Single Cycle': 'Einzelner Zyklus'}
+    TIME_UNIT_DISPLAY = {'Seconds': 'Sekunden', 'Minutes': 'Minuten', 'Hours': 'Stunden', 'Days': 'Tage'}
+    TIME_UNITS_REV = {v: k for k, v in TIME_UNITS.items()}
+
     chart_view = tk.StringVar(value='Complete Profile')
-    chart_choice = ttk.Combobox(controls, textvariable=chart_view, state='readonly',
-                               values=['Complete Profile', 'Single Cycle'], width=12)
+    chart_view_display = tk.StringVar(value=CHART_VIEW_DISPLAY['Complete Profile'])
+    chart_choice = ttk.Combobox(controls, textvariable=chart_view_display, state='readonly',
+                               values=[CHART_VIEW_DISPLAY[k] for k in ['Complete Profile', 'Single Cycle']], width=14)
     chart_choice.pack(side='left', padx=2)
     ttk.Label(controls, text='Zyklus').pack(side='left')
     preview_cycle = tk.StringVar(value='1')
@@ -2188,7 +2193,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     unit_label = ttk.Label(controls, text='Einheit')
     unit_label.pack(side='left', padx=(6, 0))
     x_unit = tk.StringVar(value='Seconds')
-    unit_choice = ttk.Combobox(controls, textvariable=x_unit, values=list(TIME_UNITS), state='readonly', width=8)
+    x_unit_display = tk.StringVar(value=TIME_UNIT_DISPLAY['Seconds'])
+    unit_choice = ttk.Combobox(controls, textvariable=x_unit_display, values=list(TIME_UNIT_DISPLAY.values()), state='readonly', width=10)
     unit_choice.pack(side='left', padx=2)
     axis_controls = ttk.Frame(controls)
     axis_controls.pack(side='left')
@@ -2225,8 +2231,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     tracker_apply.pack(side='left', padx=(0, 2))
     ttk.Button(tracker_controls, text='Marker löschen', command=lambda: clear_markers()).pack(side='left', padx=2)
     ttk.Button(tracker_controls, text='Gesamtprofil', command=lambda: set_chart_view('Complete Profile')).pack(side='left', padx=2)
-    ttk.Button(tracker_controls, text='Akt. Zyklus', command=lambda: set_chart_view('Single Cycle')).pack(side='left', padx=2)
-    ttk.Button(tracker_controls, text='Zoom/Pan Reset', command=lambda: reset_view()).pack(side='left', padx=2)
+    ttk.Button(tracker_controls, text='Einzelner Zyklus', command=lambda: set_chart_view('Single Cycle')).pack(side='left', padx=2)
+    ttk.Button(tracker_controls, text='Zoom/Pan-Zurücksetzen', command=lambda: reset_view()).pack(side='left', padx=2)
     step_feedback = tk.StringVar(value='0 = kontinuierlich; Enter oder Anwenden.')
     ttk.Label(view, textvariable=step_feedback, font=('Arial', 8)).pack(anchor='w', pady=(0, 1))
     canvas = tk.Canvas(view, background='white', highlightthickness=1, highlightbackground='#d2d7dd')
@@ -2278,19 +2284,27 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         x_step_label.set(f'Step [{symbol}]')
         x_end_label.set(f'bis [{symbol}]')
 
-    def change_axis_unit(event=None):
-        old_unit, new_unit = state['axis_unit'], x_unit.get()
+    def change_chart_view_display(event=None):
+        rev = {v: k for k, v in CHART_VIEW_DISPLAY.items()}
+        chart_view.set(rev.get(chart_view_display.get(), 'Complete Profile'))
+        plot()
+
+    def change_axis_unit_display(event=None):
+        rev = {v: k for k, v in TIME_UNIT_DISPLAY.items()}
+        new_unit = rev.get(x_unit_display.get(), 'Seconds')
+        old_unit = x_unit.get()
         try:
             new_start = convert_axis_start_input(x_start.get(), old_unit, new_unit)
             new_step = convert_axis_input(x_step.get(), old_unit, new_unit)
             new_end = convert_axis_input(x_end.get(), old_unit, new_unit)
         except (ValueError, OverflowError):
-            x_unit.set(old_unit)
-            axis_feedback.set('Correct X Start / X Step / X End before changing Time Unit. Previous unit remains active.')
+            x_unit_display.set(TIME_UNIT_DISPLAY[old_unit])
+            axis_feedback.set('X-Start / X-Schritt / X-Ende vor dem Einheitenwechsel korrigieren. Vorherige Einheit bleibt.')
             return
         x_start.set(new_start)
         x_step.set(new_step)
         x_end.set(new_end)
+        x_unit.set(new_unit)
         state['axis_unit'] = new_unit
         update_unit_labels()
         state.pop('view', None)
@@ -2897,6 +2911,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         tracker_step.set(str(p.tracker_step_seconds))
         state['tracker_step'] = p.tracker_step_seconds
         x_unit.set(p.x_axis_unit)
+        x_unit_display.set(TIME_UNIT_DISPLAY.get(p.x_axis_unit, p.x_axis_unit))
         state['axis_unit'] = p.x_axis_unit
         unit_factor = TIME_UNITS[p.x_axis_unit][0]
         x_start.set(format(p.x_axis_start_seconds/unit_factor,'.15g'))
@@ -2909,17 +2924,17 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                        x_end_widget_label,x_end_entry,axis_apply_button,tracker_label,tracker_entry,tracker_apply):
             widget.pack_forget()
         if 'x_axis_unit' in global_visible:
-            unit_label.pack(side='left',padx=(8,0),after=preview_spin);unit_choice.pack(side='left',padx=6,after=unit_label)
+            unit_label.pack(side='left',padx=(6,0),after=preview_spin);unit_choice.pack(side='left',padx=2,after=unit_label)
         if 'x_axis_start_seconds' in global_visible:
-            x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=6)
+            x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=1)
         if 'x_axis_end_seconds' in global_visible:
-            x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=6)
+            x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=1)
         if 'x_axis_step_seconds' in global_visible:
-            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=6)
+            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=1)
         if {'x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'} & global_visible:
-            axis_apply_button.pack(side='left')
+            axis_apply_button.pack(side='left',padx=(2,0))
         if 'tracker_step_seconds' in global_visible:
-            tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=6);tracker_apply.pack(side='left')
+            tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=2);tracker_apply.pack(side='left',padx=(0,2))
         row = 0
         global_visible_order = visible_global_keys(state['configuration'])
         for key in list(visible) + [k for k in global_visible_order if k not in ACTUATOR_KEYS]:
@@ -2993,6 +3008,11 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         }
         source_note.set(notes[p.test_id])
         title.set(p.test_id+' · '+TEST_NAMES[p.test_id])
+        # Update display strings
+        if 'CHART_VIEW_DISPLAY' in dir():
+            chart_view_display.set(CHART_VIEW_DISPLAY.get(chart_view.get(), chart_view.get()))
+        if 'TIME_UNIT_DISPLAY' in dir():
+            x_unit_display.set(TIME_UNIT_DISPLAY.get(x_unit.get(), x_unit.get()))
 
     def switch_test(event=None):
         # Preserve edits to the previous recipe when they are valid.
@@ -3011,7 +3031,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         clear_markers()
         hide_tracker()
         preview_cycle.set('1')
-        chart_view.set('Complete Profile' if selected.get() in {'ENV_026', 'ENV_012'} else 'Single Cycle')
+        chart_view.set('Complete Profile')
+        chart_view_display.set(CHART_VIEW_DISPLAY['Complete Profile'])
         update()
 
     def export():
@@ -3165,15 +3186,15 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
 
     buttons = ttk.Frame(outer)
     buttons.pack(fill='x', pady=(10, 0))
-    for label, command in [('Generate Profile', update), ('Save CSV', export),
-                           ('Save Cycle 1 (Excel)', export_cycle1),
-                           ('Export Breakpoints …', export_breakpoints_dialog),
-                           ('Save Global', save_global), ('Save Current Test', save_config),
-                           ('Load Configuration', load_config)]:
+    for label, command in [('Profil erzeugen', update), ('CSV speichern', export),
+                           ('Zyklus 1 (Excel)', export_cycle1),
+                           ('Haltepunkte exportieren …', export_breakpoints_dialog),
+                           ('Global speichern', save_global), ('Aktuellen Test speichern', save_config),
+                           ('Konfiguration laden', load_config)]:
         ttk.Button(buttons, text=label, command=command).pack(side='left', padx=(0, 8))
     selector.bind('<<ComboboxSelected>>', switch_test)
-    chart_choice.bind('<<ComboboxSelected>>', plot)
-    unit_choice.bind('<<ComboboxSelected>>', change_axis_unit)
+    chart_choice.bind('<<ComboboxSelected>>', change_chart_view_display)
+    unit_choice.bind('<<ComboboxSelected>>', change_axis_unit_display)
     preview_spin.configure(command=plot)
     preview_spin.bind('<Return>', plot)
     preview_spin.bind('<FocusOut>', plot)
