@@ -825,6 +825,37 @@ class BreakpointExportTests(unittest.TestCase):
 
 
 class OverallConfigurationTests(unittest.TestCase):
+    def test_load_configuration_migration_logs_once_and_respects_flag(self):
+        import json, tempfile, sys
+        from io import StringIO
+        from env_cycle_generator import default_configuration, load_configuration, ACTUATOR_KEYS
+        config = default_configuration()
+        config.pop('actuator_migrated_to_visible', None)
+        for k in ACTUATOR_KEYS:
+            config['global']['actuator']['unvisible'][k] = config['global']['actuator']['visible'].pop(k)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cfg.json'
+            path.write_text(json.dumps(config), encoding='utf-8')
+            buf = StringIO()
+            old = sys.stderr
+            sys.stderr = buf
+            try:
+                loaded = load_configuration(path)
+            finally:
+                sys.stderr = old
+            out = buf.getvalue()
+            self.assertIn('Automatisch verschoben', out)
+            self.assertIn('load_open_seconds', out)
+            self.assertTrue(loaded.get('actuator_migrated_to_visible'))
+            # Second load - no migration
+            buf2 = StringIO()
+            sys.stderr = buf2
+            try:
+                loaded2 = load_configuration(path)
+            finally:
+                sys.stderr = old
+            self.assertNotIn('Automatisch verschoben', buf2.getvalue())
+
     def test_promote_global_keys_moves_unvisible_to_visible(self):
         from env_cycle_generator import default_configuration, promote_global_keys, ACTUATOR_KEYS
         import copy

@@ -758,6 +758,7 @@ def parameters_from_configuration(config, test_id):
 
 
 def load_configuration(path=DEFAULT_CONFIG_PATH):
+    import sys
     path = Path(path)
     config = json.loads(path.read_text(encoding='utf-8-sig'))
     rewrite = False
@@ -771,8 +772,21 @@ def load_configuration(path=DEFAULT_CONFIG_PATH):
         normalized = normalize_schema4(config)
         rewrite = rewrite or normalized != config
         config = normalized
-        if promote_global_keys(config, ACTUATOR_KEYS):
-            rewrite = True
+        if not config.get('actuator_migrated_to_visible'):
+            moved = []
+            for section in config['global'].values():
+                for key in list(ACTUATOR_KEYS):
+                    if key in section.get('unvisible', {}):
+                        moved.append(key)
+            if moved:
+                if promote_global_keys(config, ACTUATOR_KEYS):
+                    rewrite = True
+                config['actuator_migrated_to_visible'] = True
+                rewrite = True
+                print(f"[env_cycle_generator] Automatisch verschoben: {sorted(set(moved))} nach global.actuator.visible in {path}", file=sys.stderr)
+            else:
+                config['actuator_migrated_to_visible'] = True
+                rewrite = True
     if rewrite:
         temporary = path.with_name(path.name+'.schema4.tmp')
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
