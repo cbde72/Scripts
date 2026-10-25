@@ -2370,10 +2370,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
             if not math.isfinite(step) or step < 0:
                 raise ValueError
         except (ValueError, OverflowError):
-            step_feedback.set('Enter a finite Tracker Step ≥ 0 s; 0 = continuous. Previous setting remains active.')
             return False
         state['tracker_step'] = step
-        step_feedback.set(f'Active Tracker Step: {step:g} s. 0 = continuous. Endpoints remain selectable.')
         if 'cursor_fraction' in state:
             draw_tracker(state['cursor_fraction'])
         return True
@@ -2836,7 +2834,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         state.pop('view', None)
         openings, closings = actuator_counts(timeline, p)
         actuator_count_text.set(f'Actuator Open: {openings}  |  Close: {closings}')
-        step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
         state['recipes'][p.test_id] = p
         count = p.cycles if p.test_id in {'ENV_026', 'ENV_004'} else (max(ph.cycle for ph in phases) if p.test_id == 'ENV_012' else p.number_of_cycles)
         message = f'Total Duration: {timeline.duration_s/3600:.3f} h · {point_count} Data Points · {count} Cycle(s)'
