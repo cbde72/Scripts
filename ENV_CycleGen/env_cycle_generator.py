@@ -2216,8 +2216,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
     x_step_entry.pack(side='left', padx=1)
     axis_apply_button = ttk.Button(axis_controls, text='Apply Axis', command=lambda: reset_view())
     axis_apply_button.pack(side='left', padx=(2, 0))
-    axis_feedback = tk.StringVar(value='Mouse wheel = zoom X/Y · Ctrl+wheel = X only · Shift+drag = pan')
-    ttk.Label(view, textvariable=axis_feedback, font=('Arial', 8)).pack(anchor='w', pady=(0, 1))
     tracker_controls = ttk.Frame(controls2)
     tracker_controls.pack(side='left')
     tracker_label = ttk.Label(tracker_controls, text='Tracker Step [s]')
@@ -2229,8 +2227,6 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
     tracker_apply.pack(side='left', padx=(0, 2))
     ttk.Button(tracker_controls, text='Clear Markers', command=lambda: clear_markers()).pack(side='left', padx=2)
     ttk.Button(tracker_controls, text='Reset Zoom/Pan', command=lambda: reset_view()).pack(side='left', padx=2)
-    step_feedback = tk.StringVar(value='0 = continuous; press Enter or Apply.')
-    ttk.Label(view, textvariable=step_feedback, font=('Arial', 8)).pack(anchor='w', pady=(0, 1))
     canvas = tk.Canvas(view, background='white', highlightthickness=1, highlightbackground='#d2d7dd')
     canvas.pack(fill='both', expand=True)
     tracker_hint = 'Move the mouse over a chart to view all values.'
