@@ -2176,11 +2176,9 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     controls.pack(fill='x', pady=(0, 1))
     controls2 = ttk.Frame(view)
     controls2.pack(fill='x', pady=(0, 1))
+    controls3 = ttk.Frame(view)
+    controls3.pack(fill='x', pady=(0, 1))
     ttk.Label(controls, text='Chart View').pack(side='left')
-    CHART_VIEW_DISPLAY = {'Complete Profile': 'Complete Profile', 'Single Cycle': 'Single Cycle'}
-    TIME_UNIT_DISPLAY = {'Seconds': 'Seconds', 'Minutes': 'Minutes', 'Hours': 'Hours', 'Days': 'Days'}
-    TIME_UNITS_REV = {v: k for k, v in TIME_UNITS.items()}
-
     chart_view = tk.StringVar(value='Complete Profile')
     chart_choice = ttk.Combobox(controls, textvariable=chart_view, state='readonly',
                                values=['Complete Profile', 'Single Cycle'], width=18)
@@ -2194,7 +2192,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     x_unit = tk.StringVar(value='Seconds')
     unit_choice = ttk.Combobox(controls, textvariable=x_unit, values=list(TIME_UNITS), state='readonly', width=10)
     unit_choice.pack(side='left', padx=2)
-    axis_controls = ttk.Frame(controls)
+    axis_controls = ttk.Frame(controls2)
     axis_controls.pack(side='left')
     x_start_label = tk.StringVar(value='X Start [s]')
     x_start_widget_label = ttk.Label(axis_controls, textvariable=x_start_label)
@@ -2218,7 +2216,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     axis_apply_button.pack(side='left', padx=(2, 0))
     axis_feedback = tk.StringVar(value='Mouse wheel = zoom X/Y · Ctrl+wheel = X only · Shift+drag = pan')
     ttk.Label(view, textvariable=axis_feedback, font=('Arial', 8)).pack(anchor='w', pady=(0, 1))
-    tracker_controls = ttk.Frame(controls2)
+    tracker_controls = ttk.Frame(controls3)
     tracker_controls.pack(side='left')
     tracker_label = ttk.Label(tracker_controls, text='Tracker Step [s]')
     tracker_label.pack(side='left')
@@ -2915,15 +2913,15 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
         if 'x_axis_unit' in global_visible:
             unit_label.pack(side='left',padx=(6,0),after=preview_spin);unit_choice.pack(side='left',padx=2,after=unit_label)
         if 'x_axis_start_seconds' in global_visible:
-            x_start_widget_label.pack(side='left');x_start_entry.pack(side='left',padx=1)
+            x_start_widget_label.pack(in_=axis_controls, side='left');x_start_entry.pack(in_=axis_controls, side='left',padx=1)
         if 'x_axis_end_seconds' in global_visible:
-            x_end_widget_label.pack(side='left');x_end_entry.pack(side='left',padx=1)
+            x_end_widget_label.pack(in_=axis_controls, side='left');x_end_entry.pack(in_=axis_controls, side='left',padx=1)
         if 'x_axis_step_seconds' in global_visible:
-            x_step_widget_label.pack(side='left');x_step_entry.pack(side='left',padx=1)
+            x_step_widget_label.pack(in_=axis_controls, side='left');x_step_entry.pack(in_=axis_controls, side='left',padx=1)
         if {'x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'} & global_visible:
-            axis_apply_button.pack(side='left',padx=(2,0))
+            axis_apply_button.pack(in_=axis_controls, side='left',padx=(2,0))
         if 'tracker_step_seconds' in global_visible:
-            tracker_label.pack(side='left');tracker_entry.pack(side='left',padx=2);tracker_apply.pack(side='left',padx=(0,2))
+            tracker_label.pack(in_=tracker_controls, side='left');tracker_entry.pack(in_=tracker_controls, side='left',padx=2);tracker_apply.pack(in_=tracker_controls, side='left',padx=(0,2))
         row = 0
         global_visible_order = visible_global_keys(state['configuration'])
         for key in list(visible) + [k for k in global_visible_order if k not in ACTUATOR_KEYS]:
