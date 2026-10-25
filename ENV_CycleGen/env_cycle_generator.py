@@ -2662,18 +2662,33 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
     # ------------------------------------------------------------------
     # Zoom / Pan
     # ------------------------------------------------------------------
+    zoom_pending = {'id': None}
+
     def reset_view():
         state.pop('view', None)
         state.pop('pan', None)
+        zoom_pending['id'] = None
         plot()
 
     def axis_changed():
         state.pop('view', None)
+        zoom_pending['id'] = None
         plot_later()
 
     def axis_applied():
-        state.pop('view', None)
-        plot()
+        reset_view()
+
+    def schedule_zoom_redraw():
+        pid = zoom_pending['id']
+        if pid is not None:
+            try:
+                root.after_cancel(pid)
+            except Exception:
+                pass
+        def redraw():
+            zoom_pending['id'] = None
+            plot()
+        zoom_pending['id'] = root.after_idle(redraw)
 
     def set_chart_view(mode):
         chart_view.set(mode)
@@ -2733,7 +2748,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                 new_hi = anchor_y+(hi-anchor_y)*factor
                 if new_hi-new_lo > 1e-9:
                     view['y'][index] = (new_lo, new_hi)
-        plot()
+        schedule_zoom_redraw()
         return 'break'
 
     def pan_start(event):
