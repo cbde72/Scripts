@@ -2547,7 +2547,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
             return
         unit_factor, unit_symbol = TIME_UNITS[x_unit.get()]
         axis_feedback.set(f'[{unit_symbol}] {start/unit_factor:.6g}–{end/unit_factor:.6g} · '
-                          f'Mausrad=Zoom X/Y · Strg+Mausrad=nur X · Shift+Ziehen=Pan')
+                          f'Mouse wheel=zoom X/Y · Ctrl+wheel=X only · Shift+drag=pan')
         first_phase = max(0, bisect.bisect_right(timeline.starts, start)-1)
         last_phase = bisect.bisect_left(timeline.starts, data_end)
         segments = []
@@ -2841,7 +2841,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH):
                      tracker_step=p.tracker_step_seconds)
         state.pop('view', None)
         openings, closings = actuator_counts(timeline, p)
-        actuator_count_text.set(f'Actuator Auf: {openings}  |  Zu: {closings}')
+        actuator_count_text.set(f'Actuator Open: {openings}  |  Close: {closings}')
         step_feedback.set(f'Active Tracker Step: {p.tracker_step_seconds:g} s. 0 = continuous. Endpoints remain selectable.')
         state['recipes'][p.test_id] = p
         count = p.cycles if p.test_id in {'ENV_026', 'ENV_004'} else (max(ph.cycle for ph in phases) if p.test_id == 'ENV_012' else p.number_of_cycles)

@@ -921,6 +921,14 @@ class OverallConfigurationTests(unittest.TestCase):
             # Test override should still win for ENV_026
             self.assertEqual(parameters_from_configuration(saved, 'ENV_026').load_hold_seconds, 42.0)
 
+    def test_gui_source_has_no_german_ui_texts(self):
+        s = Path('env_cycle_generator.py').read_text(encoding='utf-8')
+        start = s.find('def launch_gui')
+        end = s.find('\ndef main', start)
+        gui = s[start:end]
+        for f in ['Auf:', 'Zu:', 'Mausrad', 'Strg+']:
+            self.assertNotIn(f, gui)
+
     def test_hidden_value_still_controls_generated_data(self):
         from env_cycle_generator import default_configuration,parameters_from_configuration
         config=default_configuration()
