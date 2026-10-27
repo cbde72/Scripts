@@ -1,11 +1,12 @@
 """Local INI editing with validation, backups and external-change detection."""
 import configparser
+import csv
 from datetime import datetime
 import io
 import os
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 import uuid
 
 from cycle_transfer_ads import load_profiles, load_load_cycle
@@ -105,8 +106,9 @@ class ProfileEditor:
         tabs = ttk.Notebook(self.window)
         tabs.pack(fill='both', expand=True, padx=12)
         self.curves = {}
-        specs = [('Temperature', 'Temperatur [°C]', False, '#c54a30'), ('Humidity', 'Feuchte [%]', False, '#2679b8'),
-                 ('Operation', 'Operation Mode [0/1]', True, '#498447')] if kind == 'profiles' else [('Lift', 'Lift [%]', False, '#8150aa')]
+        # Changes Step in the plot to True.
+        specs = [('Temperature', 'Temperatur [°C]', False, '#c54a30'), ('Humidity', 'Feuchte [%]', True, '#2679b8'),
+                 ('Operation', 'Operation Mode [0/1]', True, '#498447')] if kind == 'profiles' else [('Lift', 'Lift [%]', True, '#8150aa')]
         self.specs = specs
         for field, label, stepped, color in specs:
             frame = ttk.Frame(tabs, padding=6)
@@ -125,6 +127,8 @@ class ProfileEditor:
             ttk.Button(buttons, text='Punkt hinzufügen', command=lambda f=field: self.edit_point(f, True)).pack(side='left')
             ttk.Button(buttons, text='Punkt ändern', command=lambda f=field: self.edit_point(f, False)).pack(side='left', padx=6)
             ttk.Button(buttons, text='Punkt löschen', command=lambda f=field: self.delete_point(f)).pack(side='left')
+            ttk.Button(buttons, text='Breakpoint-CSV importieren',
+                       command=self.import_breakpoints).pack(side='left', padx=6)
             tree.bind('<Double-1>', lambda event, f=field: self.edit_point(f, False))
         self.plot = plot_class(self.window, height=260)
         self.plot.pack(fill='both', expand=True, padx=12, pady=8)
@@ -181,6 +185,54 @@ class ProfileEditor:
         if tree.selection():
             tree.delete(*tree.selection())
             self.preview()
+
+    def import_breakpoints(self):
+        """Replace profile or actuator points with points from a breakpoint CSV."""
+        path = filedialog.askopenfilename(
+            parent=self.window, title='Breakpoint-CSV auswählen',
+            filetypes=[('Breakpoint CSV', '*.csv'), ('Alle Dateien', '*.*')])
+        if not path:
+            return
+        try:
+            curves = ({'Temperatur': [], 'Feuchte': [], 'Operation': []}
+                      if self.kind == 'profiles' else {'Aktuator_Parameter': []})
+            with Path(path).open('r', newline='', encoding='utf-8-sig') as stream:
+                sample = stream.read(4096)
+                stream.seek(0)
+                delimiter = '\t' if '\t' in sample and ';' not in sample else ';'
+                reader = csv.DictReader(stream, delimiter=delimiter)
+                if not {'kurve', 't_s', 'wert'}.issubset(reader.fieldnames or set()):
+                    raise ValueError('Die CSV benötigt die Spalten kurve, t_s und wert.')
+                for row in reader:
+                    curve = (row.get('kurve') or '').strip()
+                    if curve not in curves:
+                        continue
+                    time_text = (row.get('t_s') or '').strip()
+                    value_text = (row.get('wert') or '').strip()
+                    if not time_text or not value_text:
+                        raise ValueError(f'Leerer Zeit- oder Wertpunkt in Kurve {curve}.')
+                    curves[curve].append((float(time_text), float(value_text)))
+            if any(not points for points in curves.values()):
+                missing = ', '.join(name for name, points in curves.items() if not points)
+                raise ValueError(f'Keine Punkte für {missing} gefunden.')
+            if any(len(points) > 32 for points in curves.values()):
+                raise ValueError('Die CSV enthält mehr als 32 Punkte in einer Kurve.')
+            names = ({'Temperatur': 'Temperature', 'Feuchte': 'Humidity',
+                      'Operation': 'Operation'}
+                     if self.kind == 'profiles' else {'Aktuator_Parameter': 'Lift'})
+            for name, points in curves.items():
+                tree = self.curves[names[name]]
+                tree.delete(*tree.get_children())
+                for time_s, value in points:
+                    tree.insert('', 'end', values=(
+                        int(time_s) if time_s.is_integer() else time_s,
+                        int(value) if value.is_integer() else value))
+            last_time = max(time_s for points in curves.values() for time_s, _ in points)
+            self.fields['Duration'].set(
+                str(int(last_time)) if last_time.is_integer() else str(last_time))
+            self.preview()
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror('Breakpoint-CSV importieren', str(exc), parent=self.window)
 
     def preview(self):
         try:

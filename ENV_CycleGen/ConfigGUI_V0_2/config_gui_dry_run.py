@@ -61,7 +61,7 @@ class SetpointPlot(ttk.Frame):
             top, bottom = row*row_height+23, (row+1)*row_height-27
             values = [p['Value'] for p in points]
             if stepped:
-                low, high = -0.1, 1.1
+                low, high = -0.1, 100 #1.1
             elif label.startswith(('Feuchte', 'Lift')):
                 low, high = 0, 100
             else:
@@ -312,7 +312,7 @@ class Application:
                 payload = load_load_cycle(path)
                 summary = payload['Name']+f"\nDauer: {payload['Duration_s']} s\nLift-Punkte:\n"
                 summary += '\n'.join(f"{p['Time_s']} s → {p['Value']} %" for p in payload['Lift'])
-                self.load_plot.show(payload['Name'], payload['Duration_s'], [('Lift [%]', payload['Lift'], False, '#8150aa')])
+                self.load_plot.show(payload['Name'], payload['Duration_s'], [('Lift [%]', payload['Lift'], True, '#8150aa')])
             if key != 'profiles':
                 box = getattr(self, key+'_preview')
                 box.configure(state='normal'); box.delete('1.0', 'end'); box.insert('end', summary); box.configure(state='disabled')

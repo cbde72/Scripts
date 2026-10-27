@@ -122,7 +122,8 @@ class Parameters:
     load_open_seconds: float = 10.0
     load_hold_seconds: float = 10.0
     load_pause_seconds: float = 5.0
-    load_close_seconds: float = 10.0
+    load_additional_pause_seconds: float = 0.0
+    load_close_seconds: float = 20.0
     load_start_delay_seconds: float = 1.0
     load_max_percent: float = 100.0
     load_axis_min_percent: float = 0.0
@@ -158,6 +159,8 @@ class Parameters:
         if min(self.load_start_delay_seconds, self.load_open_seconds, self.load_hold_seconds,
                self.load_close_seconds, self.load_pause_seconds) < 0:
             raise ValueError('Actuator times must be greater than or equal to zero.')
+        if self.load_close_seconds <= self.load_open_seconds:
+            raise ValueError('Closing Time must be greater than Opening Time.')
         if self.load_open_seconds + self.load_hold_seconds + self.load_close_seconds + self.load_pause_seconds <= 0:
             raise ValueError('Actuator cycle duration must be greater than zero.')
         if self.tracker_step_seconds < 0:
@@ -540,7 +543,7 @@ SOURCE_DOCUMENT = '2.ENV_Test_Plan_Cp_r00v05(2).docx'
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().with_name('env_config_V04.json')
 COMMON_KEYS = 'humidity_rh active_mode standby_mode'.split()
 CSV_KEYS = ['sample_seconds']
-ACTUATOR_KEYS = 'load_start_delay_seconds load_open_seconds load_hold_seconds load_pause_seconds load_close_seconds load_max_percent'.split()
+ACTUATOR_KEYS = 'load_start_delay_seconds load_open_seconds load_close_seconds load_pause_seconds load_additional_pause_seconds'.split()
 VOLTAGE_KEYS = 'minimum_voltage_v nominal_voltage_v ua_voltage_v ub_voltage_v maximum_voltage_v off_voltage_v'.split()
 CHART_KEYS = ('tracker_step_seconds x_axis_unit x_axis_start_seconds x_axis_step_seconds x_axis_end_seconds '
               'temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c '
@@ -551,9 +554,10 @@ GLOBAL_SECTION_KEYS = {'csv': CSV_KEYS, 'actuator': ACTUATOR_KEYS,
                        'chart': CHART_KEYS, 'voltage': VOLTAGE_KEYS}
 GLOBAL_KEYS = set(key for keys in GLOBAL_SECTION_KEYS.values() for key in keys)
 GLOBAL_VISIBLE_KEYS = {'sample_seconds', 'tracker_step_seconds', 'x_axis_unit',
-                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds',
-                       'load_start_delay_seconds', 'load_open_seconds', 'load_hold_seconds',
-                       'load_pause_seconds', 'load_close_seconds', 'load_max_percent'}
+                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds'}
+# Actuator positions are stored with every test (as test overrides). global.actuator only
+# holds the defaults shown for a test that has no values of its own; it is never shown in the GUI.
+PER_TEST_KEYS = tuple(ACTUATOR_KEYS)
 TEST_KEYS = {
  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c precondition_minutes activation_minutes temperature_change_rate cycles ramps',
  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
@@ -565,7 +569,7 @@ TEST_KEYS = {
  'ENV_003': 'maximum_temperature_c room_temperature_c number_of_cycles rising_humidity_rh cooling_humidity_rh climate_check_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes',
 }
 # These are initial visibility choices, not hard-coded GUI constraints.
-HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh load_close_seconds load_max_percent load_axis_min_percent load_axis_max_percent load_axis_step_percent'.split())
+HIDDEN_KEYS = set('ramps start_temperature_c ramp_c_per_min ramp_mode hot_standby_minutes cooling_to_min_minutes cycling_cold_dwell_minutes warming_to_room_minutes warming_to_max_minutes cycling_hot_dwell_minutes cooling_to_room_minutes cold_check_start_minutes climate_rise_minutes climate_hot_minutes climate_fall_minutes climate_room_minutes climate_tail_minutes frost_prehold_minutes frost_cooling_minutes frost_hold_minutes frost_warming_minutes frost_posthold_minutes ub_voltage_v temperature_axis_min_c temperature_axis_max_c temperature_axis_step_c humidity_axis_min_rh humidity_axis_max_rh humidity_axis_step_rh load_open_seconds load_close_seconds load_max_percent load_axis_min_percent load_axis_max_percent load_axis_step_percent'.split())
 SPECIAL_CONTROLS = {'tracker_step_seconds','x_axis_unit','x_axis_start_seconds','x_axis_step_seconds','x_axis_end_seconds'}
 PARAMETER_LABELS = {
  'humidity_rh':'Default Relative Humidity [% RH]', 'sample_seconds':'CSV Time Step [s]',
@@ -587,10 +591,9 @@ PARAMETER_LABELS = {
  'hot_humidity_rh':'Hot Dwell RH [%]', 'rising_humidity_rh':'Temperature Rise RH [%]', 'cooling_humidity_rh':'Temperature Fall RH [%]',
  'climate_check_minutes':'Function Check Duration [min]', 'frost_cycles':'Initial Frost Cycles',
  'cold_check_duration_minutes':'Cold Function Check Duration [min]',
- 'load_open_seconds':'Actuator Opening Time [s]', 'load_hold_seconds':'Actuator Hold Time [s]',
- 'load_close_seconds':'Actuator Closing Time [s]', 'load_pause_seconds':'Actuator Pause Time [s]',
- 'load_start_delay_seconds':'Actuator Start Delay [s]',
- 'load_max_percent':'Actuator Max Opening [%]',
+ 'load_open_seconds':'Opening Time [s]', 'load_close_seconds':'Closing Time [s]',
+ 'load_pause_seconds':'Pause [s]', 'load_additional_pause_seconds':'Additional Pause [s]',
+ 'load_start_delay_seconds':'Start Delay [s]',
 }
 
 def parameter_label(key):
@@ -606,7 +609,7 @@ def default_configuration():
             'unvisible': {key: defaults[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
     config = {'schema_version':4, 'source_document':SOURCE_DOCUMENT,
               'global': global_config, 'tests':{},
-              'actuator_migrated_to_visible': True}
+              'actuator_per_test': True}
     for tid in GENERATORS:
         values = asdict(default_parameters(tid))
         keys = list(dict.fromkeys(TEST_KEYS[tid].split()+COMMON_KEYS))
@@ -700,6 +703,17 @@ def promote_global_keys(config, keys):
     return changed
 
 
+def hide_global_keys(config, keys):
+    """Move global keys to the unvisible section (values are kept; the GUI no longer shows them)."""
+    changed = False
+    for section in config['global'].values():
+        for key in keys:
+            if key in section['visible']:
+                section['unvisible'][key] = section['visible'].pop(key)
+                changed = True
+    return changed
+
+
 def parameters_from_configuration(config, test_id):
     if config.get('schema_version') != 4 or not isinstance(config.get('tests'),dict):
         raise ValueError('Expected a schema_version 4 overall configuration with global and tests sections.')
@@ -773,21 +787,14 @@ def load_configuration(path=DEFAULT_CONFIG_PATH):
         normalized = normalize_schema4(config)
         rewrite = rewrite or normalized != config
         config = normalized
-        if not config.get('actuator_migrated_to_visible'):
-            moved = []
-            for section in config['global'].values():
-                for key in list(ACTUATOR_KEYS):
-                    if key in section.get('unvisible', {}):
-                        moved.append(key)
-            if moved:
-                if promote_global_keys(config, ACTUATOR_KEYS):
-                    rewrite = True
-                config['actuator_migrated_to_visible'] = True
-                rewrite = True
-                print(f"[env_cycle_generator] Automatically moved: {sorted(set(moved))} to global.actuator.visible in {path}", file=sys.stderr)
-            else:
-                config['actuator_migrated_to_visible'] = True
-                rewrite = True
+        if not config.get('actuator_per_test'):
+            # One-time migration: global actuator values stay in the file as defaults, but are
+            # no longer visible in the GUI; every test stores its own values from now on.
+            hide_global_keys(config, PER_TEST_KEYS)
+            config['actuator_per_test'] = True
+            rewrite = True
+            print(f"[env_cycle_generator] Global actuator values moved to global.actuator.unvisible "
+                  f"(defaults only); actuator positions are stored per test in {path}", file=sys.stderr)
     if rewrite:
         temporary = path.with_name(path.name+'.schema4.tmp')
         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
@@ -819,6 +826,8 @@ def save_current_test(path, parameters, entry_template=None, override_keys=None)
             overrides.pop(key, None)
         else:
             overrides[key] = values[key]
+    for key in PER_TEST_KEYS:
+        overrides[key] = values[key]      # actuator positions always belong to the saved test
     if overrides:
         entry['overrides'] = overrides
     else:
@@ -897,20 +906,16 @@ def build_load_schedule(phases, starts):
 
 
 def active_load_percent(elapsed_s, p):
-    """Actuator position inside one uninterrupted Mode-3.2 interval."""
+    """Jump-function actuator position inside one active mode interval."""
     if elapsed_s < p.load_start_delay_seconds:
         return 0.0
-    duration = (p.load_open_seconds + p.load_hold_seconds
-                + p.load_close_seconds + p.load_pause_seconds)
+    duration = (p.load_close_seconds + p.load_pause_seconds
+                + p.load_additional_pause_seconds)
+    if duration <= 0:
+        return 0.0
     phase_time = (elapsed_s-p.load_start_delay_seconds) % duration
-    if p.load_open_seconds > 0 and phase_time < p.load_open_seconds:
-        return p.load_max_percent * phase_time / p.load_open_seconds
-    phase_time -= p.load_open_seconds
-    if phase_time < p.load_hold_seconds:
-        return p.load_max_percent
-    phase_time -= p.load_hold_seconds
-    if p.load_close_seconds > 0 and phase_time < p.load_close_seconds:
-        return p.load_max_percent * (1.0-phase_time/p.load_close_seconds)
+    if p.load_open_seconds <= phase_time < p.load_close_seconds:
+        return 100.0
     return 0.0
 
 
@@ -935,8 +940,8 @@ def actuator_event_times(phases, starts, duration_s, p):
             if len(events) > 15000000:
                 raise ValueError('Too many actuator events (maximum 150000000). Increase actuator cycle times.')
 
-    cycle_duration = (p.load_open_seconds + p.load_hold_seconds
-                      + p.load_close_seconds + p.load_pause_seconds)
+    cycle_duration = (p.load_close_seconds + p.load_pause_seconds
+                      + p.load_additional_pause_seconds)
     i = 0
     while i < len(phases):
         if phases[i].mode != '3.2' or (i and phases[i-1].mode == '3.2'):
@@ -950,11 +955,7 @@ def actuator_event_times(phases, starts, duration_s, p):
         repeated_start = active_start + p.load_start_delay_seconds
         add(active_start)
         if repeated_start <= active_end:
-            opening_jump = (p.load_open_seconds == 0 and p.load_max_percent != 0
-                            and p.load_hold_seconds+p.load_close_seconds > 0)
-            closing_jump = (p.load_close_seconds == 0 and p.load_max_percent != 0
-                            and p.load_open_seconds+p.load_hold_seconds > 0)
-            add(repeated_start, opening_jump, active_start)
+            add(repeated_start + p.load_open_seconds, True, active_start)
 
             def add_while_active(time_s, discontinuity=False):
                 if time_s <= active_end:
@@ -962,22 +963,14 @@ def actuator_event_times(phases, starts, duration_s, p):
 
             base = repeated_start
             while base <= active_end:
-                opening_end = base + p.load_open_seconds
-                hold_end = opening_end + p.load_hold_seconds
-                closing_end = hold_end + p.load_close_seconds
+                closing_end = base + p.load_close_seconds
                 cycle_end = base + cycle_duration
-                add_while_active(base, opening_jump)
-                add_while_active(opening_end)
-                add_while_active(hold_end, closing_jump)
-                add_while_active(closing_end)
+                add_while_active(base + p.load_open_seconds, True)
+                add_while_active(closing_end, True)
                 add_while_active(cycle_end)
                 base = cycle_end
         exit_load = load_before_active_exit(active_start, active_end, p)
         add(active_end, p.load_close_seconds == 0 and exit_load != 0, active_start)
-        if (active_end < duration_s and p.load_close_seconds > 0
-                and p.load_max_percent != 0 and exit_load != 0):
-            close_duration = p.load_close_seconds*abs(exit_load/p.load_max_percent)
-            add(min(duration_s, active_end+close_duration))
         i = j
     return sorted(events)
 
@@ -1515,6 +1508,53 @@ def _simple_step_breakpoints(phases, timeline, indices, offset, cycle_override,
     return entries
 
 
+def _ensure_step_endpoints(entries, phases, timeline, indices, offset,
+                           cycle_override):
+    """Keep an explicit start and end point for every step curve.
+
+    A step export normally only needs the points where its value changes.
+    Consumers of the breakpoint file also need the profile extent, however:
+    a constant curve must not collapse to a single point and a final value
+    change must still have an explicit end point.  Repeating the final value
+    at the end does not change the reconstructed step function.
+    """
+    if not entries or not indices:
+        return entries
+
+    last_index = indices[-1]
+    end_s = timeline.starts[last_index] + phases[last_index].duration_s
+    last = entries[-1]
+    if _same_time(last['time_s'] + offset, end_s):
+        return entries
+
+    entries.append({
+        'time_s': end_s - offset,
+        'value': last['value'],
+        'cycle': cycle_override if cycle_override is not None else phases[last_index].cycle,
+        'kind': 'step',
+        'note': last.get('note', ''),
+    })
+    return entries
+
+
+def _add_step_edges(entries):
+    """Add duplicate-x points so a chart draws each step vertically."""
+    if len(entries) < 2:
+        return entries
+    expanded = [entries[0]]
+    for entry in entries[1:]:
+        previous = expanded[-1]
+        if (not _same_time(previous['time_s'], entry['time_s'])
+                and not _same_value(previous['value'], entry['value'])):
+            expanded.append({
+                **previous,
+                'time_s': entry['time_s'],
+                'kind': 'jump',
+            })
+        expanded.append(entry)
+    return expanded
+
+
 def _humidity_step_breakpoints(phases, timeline, indices, offset, cycle_override):
     candidates = []
 
@@ -1598,20 +1638,24 @@ def _normalize_step_curve(curve):
 def _step_breakpoints_for_indices(phases, timeline, curve_key, indices, offset,
                                   cycle_override):
     if curve_key == 'humidity':
-        return _humidity_step_breakpoints(phases, timeline, indices, offset, cycle_override)
-    if curve_key == 'operation':
-        return _simple_step_breakpoints(
+        entries = _humidity_step_breakpoints(
+            phases, timeline, indices, offset, cycle_override)
+    elif curve_key == 'operation':
+        entries = _simple_step_breakpoints(
             phases, timeline, indices, offset, cycle_override,
             key_function=lambda phase: phase.mode,
             value_function=lambda phase: 1 if phase.mode == '3.2' else 0,
             note_function=lambda phase: f'modus={phase.mode}',
         )
-    return _simple_step_breakpoints(
-        phases, timeline, indices, offset, cycle_override,
-        key_function=lambda phase: phase.voltage_v,
-        value_function=lambda phase: phase.voltage_v,
-        note_function=lambda phase: '',
-    )
+    else:
+        entries = _simple_step_breakpoints(
+            phases, timeline, indices, offset, cycle_override,
+            key_function=lambda phase: phase.voltage_v,
+            value_function=lambda phase: phase.voltage_v,
+            note_function=lambda phase: '',
+        )
+    return _ensure_step_endpoints(entries, phases, timeline, indices, offset,
+                                  cycle_override)
 
 
 def step_breakpoints(phases, timeline, curve, p=None, *, cycle=None, relative=True):
@@ -1629,8 +1673,8 @@ def step_breakpoints(phases, timeline, curve, p=None, *, cycle=None, relative=Tr
 
 def _actuator_blocks_for_indices(phases, timeline, p, indices, offset,
                                  cycle_override):
-    cycle_duration_s = (p.load_open_seconds + p.load_hold_seconds
-                        + p.load_close_seconds + p.load_pause_seconds)
+    cycle_duration_s = (p.load_close_seconds + p.load_pause_seconds
+                        + p.load_additional_pause_seconds)
     blocks = []
     position = 0
     while position < len(indices):
@@ -1714,7 +1758,7 @@ def _actuator_cycle_points(phases, timeline, p, blocks, offset, cycle_override):
     if block is None:
         return None
     start_s = block['start_abs'] + p.load_start_delay_seconds
-    maximum = p.load_max_percent
+    maximum = 100.0
     raw = [(start_s, 0.0)]
 
     def add(time_s, value):
@@ -1722,16 +1766,9 @@ def _actuator_cycle_points(phases, timeline, p, blocks, offset, cycle_override):
             return
         raw.append((time_s, value))
 
-    if p.load_open_seconds > 0:
-        add(start_s + p.load_open_seconds, maximum)
-    else:
-        add(start_s, maximum)
-    hold_end = start_s + p.load_open_seconds + p.load_hold_seconds
-    add(hold_end, maximum)
-    if p.load_close_seconds > 0:
-        add(hold_end + p.load_close_seconds, 0.0)
-    else:
-        add(hold_end, 0.0)
+    add(start_s, maximum)
+    close_time = block['start_abs'] + p.load_start_delay_seconds + p.load_close_seconds
+    add(close_time, 0.0)
     add(start_s + block['cycle_duration_s'], 0.0)
 
     points = []
@@ -1821,10 +1858,34 @@ def _simplify_xy_polyline(points):
 
 def _actuator_cycle_xy(phases, timeline, parameters, cycle_indices,
                        cycle_start_s, cycle_end_s):
-    """Exact first-cycle actuator polyline, including vertical jumps."""
+    """One representative actuator cycle as a jump-function polyline."""
     duration_s = cycle_end_s - cycle_start_s
     if parameters is None:
         return [(0.0, 0.0), (duration_s, 0.0)]
+
+    first_active = next((index for index in cycle_indices
+                         if phases[index].mode == '3.2'), None)
+    if first_active is None:
+        return [(0.0, 0.0), (duration_s, 0.0)]
+
+    start = timeline.starts[first_active] - cycle_start_s
+    start += parameters.load_start_delay_seconds
+    cycle_duration = (parameters.load_close_seconds
+                      + parameters.load_pause_seconds
+                      + parameters.load_additional_pause_seconds)
+    open_time = start + parameters.load_open_seconds
+    close = start + parameters.load_close_seconds
+    cycle_end = start + cycle_duration
+    points = [(0.0, 0.0)]
+    if open_time > 0:
+        points.append((open_time, 0.0))
+    points.extend([
+        (open_time, 100.0),
+        (close, 100.0),
+        (close, 0.0),
+        (cycle_end, 0.0),
+    ])
+    return [(x, y) for x, y in _dedupe_xy(points) if x <= duration_s]
 
     times = {timeline.starts[index] for index in cycle_indices}
     times.add(cycle_start_s)
@@ -1890,8 +1951,8 @@ def _export_cycle1_xy_table(path, timeline, parameters, time_unit='s'):
 
     operation = _simple_step_breakpoints(
         phases, timeline, cycle1_indices, cycle_start_s, 1,
-        key_function=lambda phase: phase.mode,
-        value_function=lambda phase: mode_categories.index(phase.mode),
+        key_function=lambda phase: phase.mode in {'3.2', '3.4'},
+        value_function=lambda phase: 1 if phase.mode in {'3.2', '3.4'} else 0,
         note_function=lambda phase: f'modus={phase.mode}',
     )
     curves.append(('Operation', _step_xy_polyline(operation, cycle_duration_s)))
@@ -1941,8 +2002,11 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
 
     Temperature points are the exact linear polygon; step curves change only
     when their value changes. Mode-3.2 actuator runs are summarized as blocks,
-    because individual actuator events would be far too numerous.
+    because individual actuator events would be far too numerous. If no cycle
+    is specified, only cycle 1 is exported.
     """
+    if cycle is None:
+        cycle = 1
     unit, factor = resolve_time_unit(time_unit)
     format_key = str(fmt).strip().lower()
     if format_key not in {'csv', 'json'}:
@@ -2059,6 +2123,19 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
     if 'Aktuator' in curves:
         append_rows('Aktuator', curves['Aktuator'], '%')
 
+    actuator_parameters = [
+        ('initial', 0.0, 0.0, ''),
+        ('Opening Time', p.load_open_seconds, 100.0, 's'),
+        ('Closing Time', p.load_close_seconds, 100.0, 's'),
+        ('Pause', p.load_close_seconds + p.load_pause_seconds, 0.0, 's'),
+        ('Additional Pause', p.load_close_seconds + p.load_pause_seconds
+         + p.load_additional_pause_seconds, 0.0, 's'),
+    ]
+    actuator_parameters = [
+        item for index, item in enumerate(actuator_parameters)
+        if index == 0 or item[1] > actuator_parameters[index - 1][1]
+    ]
+
     repeat_row = None
     if repeat is not None and repeat['remaining'] > 0:
         repeat_row = [
@@ -2075,8 +2152,19 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
             writer = csv.writer(stream, delimiter=';')
             writer.writerow(['kurve', 'punkt', 'zyklus', 't_s', 'wert', 'einheit',
                              'bis_naechster', 'steigung_pro_min', 'hinweis'])
+            previous_curve = None
             for row in rows:
+                curve = row['csv'][0]
+                if previous_curve is not None and curve != previous_curve:
+                    writer.writerow([])
                 writer.writerow(row['csv'])
+                previous_curve = curve
+            writer.writerow([])
+            for name, time_s, value, value_unit in actuator_parameters:
+                writer.writerow(['Aktuator_Parameter', name, '',
+                                 _breakpoint_number(time_s),
+                                 _breakpoint_number(value), value_unit, '', '',
+                                 'absolute Zeit im aktiven Mode-Block'])
             if repeat_row is not None:
                 writer.writerow(repeat_row)
     else:
@@ -2088,6 +2176,10 @@ def export_breakpoints(path, phases, timeline, p, *, cycle=None, time_unit='s',
             'counts': counts,
             'notes': notes,
             'curves': {},
+            'actuator_parameters': {
+                name: {'time_s': time_s, 'value': value, 'unit': value_unit}
+                for name, time_s, value, value_unit in actuator_parameters
+            },
         }
         for row in rows:
             payload['curves'].setdefault(row['json']['kurve'], []).append(row['json'])
@@ -2181,7 +2273,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
     controls3 = ttk.Frame(view)
     controls3.pack(fill='x', pady=(0, 1))
     ttk.Label(controls, text='Chart View').pack(side='left')
-    chart_view = tk.StringVar(value='Complete Profile')
+    chart_view = tk.StringVar(value='Single Cycle')
     chart_choice = ttk.Combobox(controls, textvariable=chart_view, state='readonly',
                                values=['Complete Profile', 'Single Cycle'], width=18)
     chart_choice.pack(side='left', padx=2)
@@ -2316,7 +2408,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         args['x_axis_unit'] = x_unit.get()
         visible_globals = set(visible_global_keys(state['configuration']))
         overrides = state['configuration']['tests'][selected.get()].get('overrides', {})
-        for key in GLOBAL_KEYS - visible_globals:
+        for key in GLOBAL_KEYS - visible_globals - set(PER_TEST_KEYS):
             args[key] = overrides.get(key, state['global_values'][key])
         p = Parameters(**args)
         p.validate()
@@ -2948,14 +3040,16 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
                 row += 1
         ttk.Separator(form, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=(10, 4))
         row += 1
-        ttk.Label(form, text='Actuator Parameters (global)',
+        stored_here = set(state['configuration']['tests'][p.test_id].get('overrides', {})) & set(PER_TEST_KEYS)
+        ttk.Label(form, text='Actuator Parameters (this test)',
                   font=('Arial', 9, 'bold')).grid(row=row, column=0, columnspan=3, sticky='w')
         row += 1
-        ttk.Label(form, text='Unchecked: global value applies. Checking "Test" overrides it for this test only.',
+        ttk.Label(form, text='Saved with this test by \"Save Current Test\". Until then the default '
+                             'from the configuration file is shown.',
                   font=('Arial', 8), wraplength=250, justify='left').grid(
                       row=row, column=0, columnspan=3, sticky='w', pady=(0, 4))
         row += 1
-        for key in ACTUATOR_KEYS:
+        for key in PER_TEST_KEYS:
             cell = ttk.Frame(form)
             cell.grid(row=row, column=0, columnspan=3, sticky='ew', pady=1)
             ttk.Label(cell, text=parameter_label(key), wraplength=140).pack(side='left')
@@ -2966,9 +3060,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
             entry.bind('<KeyRelease>', update_later)
             entry.bind('<Return>', update_now)
             entry.bind('<FocusOut>', flush_pending_update)
-            flag = tk.BooleanVar(value=key in selected_overrides)
-            override_vars[key] = flag
-            ttk.Checkbutton(cell, text='Test', variable=flag).pack(side='left')
+            ttk.Label(cell, text='saved' if key in stored_here else 'default', font=('Arial', 8),
+                      foreground='#2d6a2d' if key in stored_here else '#777777').pack(side='left')
             row += 1
         form_canvas.yview_moveto(0)
         notes = {
@@ -3001,7 +3094,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         clear_markers()
         hide_tracker()
         preview_cycle.set('1')
-        chart_view.set('Complete Profile')
+        chart_view.set('Single Cycle')
         update()
 
     def export():
@@ -3046,7 +3139,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
         body = ttk.Frame(dialog, padding=12)
         body.pack(fill='both', expand=True)
 
-        cycle_var = tk.StringVar(value='all')
+        cycle_var = tk.StringVar(value='1')
         unit_var = tk.StringVar(value=TIME_UNITS[x_unit.get()][1])
         format_var = tk.StringVar(value='csv')
         whole_var = tk.BooleanVar(value=False)

@@ -1,0 +1,13 @@
+﻿kurve;punkt;zyklus;t_s;wert;einheit;bis_naechster;steigung_pro_min;hinweis
+Temperatur;0;1;0;23;°C;ramp;-4;
+Temperatur;1;1;945;-40;°C;hold;0;
+Temperatur;2;1;1845;-40;°C;ramp;4;
+Temperatur;3;1;3645;80;°C;hold;0;
+Temperatur;4;1;4545;80;°C;ramp;-4;
+Temperatur;5;1;5400;23;°C;;;
+Feuchte;0;1;0;60;%RH;step;;
+Operation;0;1;0;0;0/1;step;;modus=3.1
+Operation;1;1;1545;1;0/1;step;;modus=3.2
+Operation;2;1;4545;0;0/1;step;;modus=3.1
+Spannung;0;1;0;48;V;step;;
+Aktuator_Block;0;1;1545;;;;;"start=1545;ende=4545;verzoegerung=1;open=1;hold=10;close=1;pause=120;max=100;zyklusdauer=132;vollstaendige_zyklen=22"

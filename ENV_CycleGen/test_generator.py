@@ -691,6 +691,26 @@ class BreakpointExportTests(unittest.TestCase):
                 for entry in curves['operation']:
                     self.assertTrue(entry['note'].startswith('modus='))
 
+    def test_step_breakpoints_have_explicit_endpoints(self):
+        phases = [Phase(1, 'constant', 100, 20, 20, 60, '3.1', voltage_v=12)]
+        timeline = Timeline(phases)
+        for curve in ('humidity', 'operation', 'voltage'):
+            with self.subTest(curve=curve):
+                entries = step_breakpoints(phases, timeline, curve)
+                self.assertGreaterEqual(len(entries), 2)
+                self.assertEqual(entries[0]['time_s'], 0)
+                self.assertEqual(entries[-1]['time_s'], 100)
+                self.assertEqual(entries[0]['value'], entries[-1]['value'])
+
+        phases = [
+            Phase(1, 'A', 40, 20, 20, 60, '3.1', voltage_v=12),
+            Phase(1, 'B', 60, 20, 20, 60, '3.2', voltage_v=24),
+        ]
+        timeline = Timeline(phases)
+        entries = step_breakpoints(phases, timeline, 'voltage')
+        self.assertEqual([entry['time_s'] for entry in entries], [0, 40, 100])
+        self.assertEqual([entry['value'] for entry in entries], [12, 24, 24])
+
     def test_synthetic_temperature_jump(self):
         phases = [Phase(1, 'A', 10, 20, 20, 60, '3.1'),
                   Phase(1, 'B', 10, 80, 80, 60, '3.2')]
@@ -754,7 +774,7 @@ class BreakpointExportTests(unittest.TestCase):
             for row in rows:
                 by_curve.setdefault(row['kurve'], []).append(row)
             self.assertEqual(len(by_curve['Temperatur']), info['counts']['Temperatur'])
-            self.assertEqual(len(by_curve['Temperatur']), 10)
+            self.assertEqual(len(by_curve['Temperatur']), 6)
             self.assertEqual(float(by_curve['Temperatur'][0]['t_s']), 0)
             self.assertEqual(float(by_curve['Temperatur'][-1]['t_s']), 10800)
             self.assertEqual(by_curve['Operation'][0]['wert'], '0')
@@ -767,7 +787,7 @@ class BreakpointExportTests(unittest.TestCase):
             payload = json.loads(json_target.read_text(encoding='utf-8'))
         self.assertEqual(payload['counts']['Temperatur'], json_info['counts']['Temperatur'])
         self.assertIn('Temperatur', payload['curves'])
-        self.assertEqual(len(payload['curves']['Temperatur']), 10)
+        self.assertEqual(len(payload['curves']['Temperatur']), 6)
 
     def test_undefined_humidity_and_threshold(self):
         p = default_parameters('ENV_002')

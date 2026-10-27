@@ -1,0 +1,353 @@
+diff --git a/ENV_CycleGen/env_config_V04.json b/ENV_CycleGen/env_config_V04.json
+index 61744a7..8e4acef 100644
+--- a/ENV_CycleGen/env_config_V04.json
++++ b/ENV_CycleGen/env_config_V04.json
+@@ -9,15 +9,15 @@
+       }
+     },
+     "actuator": {
+-      "visible": {
++      "visible": {},
++      "unvisible": {
+         "load_start_delay_seconds": 1.0,
+         "load_open_seconds": 1.0,
+         "load_hold_seconds": 16.5,
+         "load_pause_seconds": 16.5,
+         "load_close_seconds": 1.0,
+         "load_max_percent": 100.0
+-      },
+-      "unvisible": {}
++      }
+     },
+     "chart": {
+       "visible": {
+@@ -225,5 +225,5 @@
+       }
+     }
+   },
+-  "actuator_migrated_to_visible": true
+-}
+\ No newline at end of file
++  "actuator_per_test": true
++}
+diff --git a/ENV_CycleGen/env_cycle_generator.py b/ENV_CycleGen/env_cycle_generator.py
+index af5ca99..4d1caa0 100644
+--- a/ENV_CycleGen/env_cycle_generator.py
++++ b/ENV_CycleGen/env_cycle_generator.py
+@@ -551,9 +551,10 @@ GLOBAL_SECTION_KEYS = {'csv': CSV_KEYS, 'actuator': ACTUATOR_KEYS,
+                        'chart': CHART_KEYS, 'voltage': VOLTAGE_KEYS}
+ GLOBAL_KEYS = set(key for keys in GLOBAL_SECTION_KEYS.values() for key in keys)
+ GLOBAL_VISIBLE_KEYS = {'sample_seconds', 'tracker_step_seconds', 'x_axis_unit',
+-                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds',
+-                       'load_start_delay_seconds', 'load_open_seconds', 'load_hold_seconds',
+-                       'load_pause_seconds', 'load_close_seconds', 'load_max_percent'}
++                       'x_axis_start_seconds', 'x_axis_step_seconds', 'x_axis_end_seconds'}
++# Actuator positions are stored with every test (as test overrides). global.actuator only
++# holds the defaults shown for a test that has no values of its own; it is never shown in the GUI.
++PER_TEST_KEYS = tuple(ACTUATOR_KEYS)
+ TEST_KEYS = {
+  'ENV_004': 'room_temperature_c minimum_temperature_c maximum_temperature_c precondition_minutes activation_minutes temperature_change_rate cycles ramps',
+  'ENV_026': 'temperature_c active_hours standby_hours cycles ramps start_temperature_c ramp_c_per_min ramp_mode',
+@@ -606,7 +607,7 @@ def default_configuration():
+             'unvisible': {key: defaults[key] for key in keys if key not in GLOBAL_VISIBLE_KEYS}}
+     config = {'schema_version':4, 'source_document':SOURCE_DOCUMENT,
+               'global': global_config, 'tests':{},
+-              'actuator_migrated_to_visible': True}
++              'actuator_per_test': True}
+     for tid in GENERATORS:
+         values = asdict(default_parameters(tid))
+         keys = list(dict.fromkeys(TEST_KEYS[tid].split()+COMMON_KEYS))
+@@ -700,6 +701,17 @@ def promote_global_keys(config, keys):
+     return changed
+ 
+ 
++def hide_global_keys(config, keys):
++    """Move global keys to the unvisible section (values are kept; the GUI no longer shows them)."""
++    changed = False
++    for section in config['global'].values():
++        for key in keys:
++            if key in section['visible']:
++                section['unvisible'][key] = section['visible'].pop(key)
++                changed = True
++    return changed
++
++
+ def parameters_from_configuration(config, test_id):
+     if config.get('schema_version') != 4 or not isinstance(config.get('tests'),dict):
+         raise ValueError('Expected a schema_version 4 overall configuration with global and tests sections.')
+@@ -773,21 +785,14 @@ def load_configuration(path=DEFAULT_CONFIG_PATH):
+         normalized = normalize_schema4(config)
+         rewrite = rewrite or normalized != config
+         config = normalized
+-        if not config.get('actuator_migrated_to_visible'):
+-            moved = []
+-            for section in config['global'].values():
+-                for key in list(ACTUATOR_KEYS):
+-                    if key in section.get('unvisible', {}):
+-                        moved.append(key)
+-            if moved:
+-                if promote_global_keys(config, ACTUATOR_KEYS):
+-                    rewrite = True
+-                config['actuator_migrated_to_visible'] = True
+-                rewrite = True
+-                print(f"[env_cycle_generator] Automatically moved: {sorted(set(moved))} to global.actuator.visible in {path}", file=sys.stderr)
+-            else:
+-                config['actuator_migrated_to_visible'] = True
+-                rewrite = True
++        if not config.get('actuator_per_test'):
++            # One-time migration: global actuator values stay in the file as defaults, but are
++            # no longer visible in the GUI; every test stores its own values from now on.
++            hide_global_keys(config, PER_TEST_KEYS)
++            config['actuator_per_test'] = True
++            rewrite = True
++            print(f"[env_cycle_generator] Global actuator values moved to global.actuator.unvisible "
++                  f"(defaults only); actuator positions are stored per test in {path}", file=sys.stderr)
+     if rewrite:
+         temporary = path.with_name(path.name+'.schema4.tmp')
+         temporary.write_text(json.dumps(config, indent=2, ensure_ascii=False)+'\n', encoding='utf-8')
+@@ -819,6 +824,8 @@ def save_current_test(path, parameters, entry_template=None, override_keys=None)
+             overrides.pop(key, None)
+         else:
+             overrides[key] = values[key]
++    for key in PER_TEST_KEYS:
++        overrides[key] = values[key]      # actuator positions always belong to the saved test
+     if overrides:
+         entry['overrides'] = overrides
+     else:
+@@ -2316,7 +2323,7 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
+         args['x_axis_unit'] = x_unit.get()
+         visible_globals = set(visible_global_keys(state['configuration']))
+         overrides = state['configuration']['tests'][selected.get()].get('overrides', {})
+-        for key in GLOBAL_KEYS - visible_globals:
++        for key in GLOBAL_KEYS - visible_globals - set(PER_TEST_KEYS):
+             args[key] = overrides.get(key, state['global_values'][key])
+         p = Parameters(**args)
+         p.validate()
+@@ -2948,14 +2955,16 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
+                 row += 1
+         ttk.Separator(form, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=(10, 4))
+         row += 1
+-        ttk.Label(form, text='Actuator Parameters (global)',
++        stored_here = set(state['configuration']['tests'][p.test_id].get('overrides', {})) & set(PER_TEST_KEYS)
++        ttk.Label(form, text='Actuator Parameters (this test)',
+                   font=('Arial', 9, 'bold')).grid(row=row, column=0, columnspan=3, sticky='w')
+         row += 1
+-        ttk.Label(form, text='Unchecked: global value applies. Checking "Test" overrides it for this test only.',
++        ttk.Label(form, text='Saved with this test by \"Save Current Test\". Until then the default '
++                             'from the configuration file is shown.',
+                   font=('Arial', 8), wraplength=250, justify='left').grid(
+                       row=row, column=0, columnspan=3, sticky='w', pady=(0, 4))
+         row += 1
+-        for key in ACTUATOR_KEYS:
++        for key in PER_TEST_KEYS:
+             cell = ttk.Frame(form)
+             cell.grid(row=row, column=0, columnspan=3, sticky='ew', pady=1)
+             ttk.Label(cell, text=parameter_label(key), wraplength=140).pack(side='left')
+@@ -2966,9 +2975,8 @@ def launch_gui(config_path=DEFAULT_CONFIG_PATH, root=None):
+             entry.bind('<KeyRelease>', update_later)
+             entry.bind('<Return>', update_now)
+             entry.bind('<FocusOut>', flush_pending_update)
+-            flag = tk.BooleanVar(value=key in selected_overrides)
+-            override_vars[key] = flag
+-            ttk.Checkbutton(cell, text='Test', variable=flag).pack(side='left')
++            ttk.Label(cell, text='saved' if key in stored_here else 'default', font=('Arial', 8),
++                      foreground='#2d6a2d' if key in stored_here else '#777777').pack(side='left')
+             row += 1
+         form_canvas.yview_moveto(0)
+         notes = {
+diff --git a/ENV_CycleGen/test_generator.py b/ENV_CycleGen/test_generator.py
+index e4eb83d..387fad9 100644
+--- a/ENV_CycleGen/test_generator.py
++++ b/ENV_CycleGen/test_generator.py
+@@ -3,6 +3,7 @@ import csv
+ import json
+ import tempfile
+ import time
++import os
+ import unittest
+ from pathlib import Path
+ from env_cycle_generator import Parameters, Phase, generate, generate_phases, export_csv, export_cycle1_csv, export_breakpoints, temperature_breakpoints, step_breakpoints, Timeline, snap_tracker_time, MeasurementMarkers, default_parameters, gradient_targets, axis_ticks, convert_axis_input, count_sample_points
+@@ -825,101 +826,124 @@ class BreakpointExportTests(unittest.TestCase):
+ 
+ 
+ class OverallConfigurationTests(unittest.TestCase):
+-    def test_load_configuration_migration_logs_once_and_respects_flag(self):
++    def test_default_configuration_hides_global_actuator_values(self):
++        from env_cycle_generator import default_configuration, visible_global_keys, ACTUATOR_KEYS
++        config = default_configuration()
++        self.assertTrue(config['actuator_per_test'])
++        self.assertEqual(config['global']['actuator']['visible'], {})
++        self.assertEqual(set(config['global']['actuator']['unvisible']), set(ACTUATOR_KEYS))
++        self.assertFalse(set(visible_global_keys(config)) & set(ACTUATOR_KEYS))
++
++    def test_load_configuration_hides_visible_global_actuator_once(self):
+         import json, tempfile, sys
+         from io import StringIO
+-        from env_cycle_generator import default_configuration, load_configuration, ACTUATOR_KEYS
++        from env_cycle_generator import default_configuration, load_configuration, hide_global_keys, \
++            promote_global_keys, ACTUATOR_KEYS
+         config = default_configuration()
+-        config.pop('actuator_migrated_to_visible', None)
+-        for k in ACTUATOR_KEYS:
+-            config['global']['actuator']['unvisible'][k] = config['global']['actuator']['visible'].pop(k)
++        config.pop('actuator_per_test')
++        promote_global_keys(config, ACTUATOR_KEYS)          # legacy layout: global actuator visible
++        values = dict(config['global']['actuator']['visible'])
++        self.assertEqual(set(values), set(ACTUATOR_KEYS))
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / 'cfg.json'
+             path.write_text(json.dumps(config), encoding='utf-8')
+-            buf = StringIO()
+-            old = sys.stderr
++            old, buf = sys.stderr, StringIO()
+             sys.stderr = buf
+             try:
+                 loaded = load_configuration(path)
+             finally:
+                 sys.stderr = old
+-            out = buf.getvalue()
+-            self.assertIn('Automatically moved', out)
+-            self.assertIn('load_open_seconds', out)
+-            self.assertTrue(loaded.get('actuator_migrated_to_visible'))
+-            # Second load - no migration
+-            buf2 = StringIO()
++            self.assertIn('stored per test', buf.getvalue())
++            self.assertTrue(loaded['actuator_per_test'])
++            self.assertEqual(loaded['global']['actuator']['visible'], {})
++            self.assertEqual(loaded['global']['actuator']['unvisible'], values)   # values preserved
++            self.assertEqual([f for f in os.listdir(directory) if f.endswith('.tmp')], [])
++            for tid in loaded['tests']:                      # no test got values by migration
++                self.assertFalse(set(loaded['tests'][tid].get('overrides', {})) & set(ACTUATOR_KEYS))
++            buf2, sys.stderr = StringIO(), StringIO()
+             sys.stderr = buf2
+             try:
+-                loaded2 = load_configuration(path)
++                again = load_configuration(path)
+             finally:
+                 sys.stderr = old
+-            self.assertNotIn('Automatically moved', buf2.getvalue())
++            self.assertEqual(buf2.getvalue(), '')            # silent and unchanged the second time
++            self.assertEqual(again, loaded)
+ 
+-    def test_promote_global_keys_moves_unvisible_to_visible(self):
+-        from env_cycle_generator import default_configuration, promote_global_keys, ACTUATOR_KEYS
+-        import copy
++    def test_hide_and_promote_global_keys_are_inverse_and_idempotent(self):
++        from env_cycle_generator import default_configuration, promote_global_keys, hide_global_keys, ACTUATOR_KEYS
+         config = default_configuration()
+-        # Move one key back to unvisible
+-        config['global']['actuator']['unvisible']['load_open_seconds'] = config['global']['actuator']['visible'].pop('load_open_seconds')
+-        changed = promote_global_keys(config, ACTUATOR_KEYS)
+-        self.assertTrue(changed)
++        self.assertTrue(promote_global_keys(config, ACTUATOR_KEYS))
+         self.assertIn('load_open_seconds', config['global']['actuator']['visible'])
+-        self.assertNotIn('load_open_seconds', config['global']['actuator']['unvisible'])
+-        # Idempotent
+-        changed2 = promote_global_keys(config, ACTUATOR_KEYS)
+-        self.assertFalse(changed2)
+-        # Other sections untouched
+-        self.assertIn('sample_seconds', config['global']['csv']['visible'])
+-
+-    def test_load_configuration_promotes_actuator_keys_atomically(self):
+-        import copy, json, os
+-        from env_cycle_generator import default_configuration, load_configuration, ACTUATOR_KEYS
++        self.assertFalse(promote_global_keys(config, ACTUATOR_KEYS))
++        self.assertTrue(hide_global_keys(config, ACTUATOR_KEYS))
++        self.assertIn('load_open_seconds', config['global']['actuator']['unvisible'])
++        self.assertNotIn('load_open_seconds', config['global']['actuator']['visible'])
++        self.assertFalse(hide_global_keys(config, ACTUATOR_KEYS))
++        self.assertIn('sample_seconds', config['global']['csv']['visible'])   # other sections untouched
++
++    def test_test_without_own_actuator_values_shows_global_defaults(self):
++        from env_cycle_generator import default_configuration, parameters_from_configuration, ACTUATOR_KEYS
++        config = default_configuration()
++        config['global']['actuator']['unvisible']['load_hold_seconds'] = 12.5
++        for tid in config['tests']:
++            self.assertEqual(parameters_from_configuration(config, tid).load_hold_seconds, 12.5)
++        config['tests']['ENV_026']['overrides'] = {'load_hold_seconds': 3.0}
++        self.assertEqual(parameters_from_configuration(config, 'ENV_026').load_hold_seconds, 3.0)
++        self.assertEqual(parameters_from_configuration(config, 'ENV_013').load_hold_seconds, 12.5)
++
++    def test_save_current_test_stores_all_actuator_values_for_that_test_only(self):
++        import json, copy
++        from dataclasses import replace
++        from env_cycle_generator import default_configuration, parameters_from_configuration, \
++            save_current_test, load_configuration, ACTUATOR_KEYS
+         config = default_configuration()
+-        config.pop('actuator_migrated_to_visible', None)
+-        # Put actuator keys in unvisible
+-        for k in ACTUATOR_KEYS:
+-            config['global']['actuator']['unvisible'][k] = config['global']['actuator']['visible'].pop(k)
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / 'cfg.json'
+-            path.write_text(json.dumps(config, ensure_ascii=False), encoding='utf-8')
+-            loaded = load_configuration(path)
+-            for k in ACTUATOR_KEYS:
+-                self.assertIn(k, loaded['global']['actuator']['visible'])
+-                self.assertNotIn(k, loaded['global']['actuator']['unvisible'])
+-            # File rewritten atomically (no .tmp left)
+-            tmp_files = [f for f in os.listdir(directory) if f.endswith('.tmp')]
+-            self.assertEqual(tmp_files, [])
++            path.write_text(json.dumps(config), encoding='utf-8')
++            before = copy.deepcopy(config)
++            p = replace(parameters_from_configuration(config, 'ENV_026'), load_hold_seconds=42.0)
++            saved = save_current_test(path, p)
++            stored = saved['tests']['ENV_026']['overrides']
++            self.assertTrue(set(ACTUATOR_KEYS) <= set(stored))          # all six, not only the edited one
++            self.assertEqual(stored['load_hold_seconds'], 42.0)
++            self.assertEqual(stored['load_open_seconds'], before['global']['actuator']['unvisible']['load_open_seconds'])
++            for tid in saved['tests']:
++                if tid != 'ENV_026':
++                    self.assertEqual(saved['tests'][tid], before['tests'][tid])   # other tests untouched
++            self.assertEqual(saved['global'], before['global'])                  # global defaults untouched
++            self.assertEqual(load_configuration(path), saved)
++            # A later change of the global default no longer affects the saved test.
++            changed = copy.deepcopy(saved)
++            changed['global']['actuator']['unvisible']['load_hold_seconds'] = 5.0
++            self.assertEqual(parameters_from_configuration(changed, 'ENV_026').load_hold_seconds, 42.0)
++            self.assertEqual(parameters_from_configuration(changed, 'ENV_013').load_hold_seconds, 5.0)
+ 
+     def test_actuator_override_wins_without_changing_global(self):
+-        from env_cycle_generator import default_configuration, parameters_from_configuration
++        from env_cycle_generator import default_configuration, parameters_from_configuration, flattened_global
+         config = default_configuration()
+-        global_val = config['global']['actuator']['visible']['load_pause_seconds']
++        global_val = flattened_global(config)['load_pause_seconds']
+         config['tests']['ENV_026']['overrides'] = {'load_pause_seconds': 99.0}
+         p = parameters_from_configuration(config, 'ENV_026')
+         self.assertEqual(p.load_pause_seconds, 99.0)
+-        self.assertEqual(config['global']['actuator']['visible']['load_pause_seconds'], global_val)
++        self.assertEqual(flattened_global(config)['load_pause_seconds'], global_val)
+         p2 = parameters_from_configuration(config, 'ENV_013')
+         self.assertEqual(p2.load_pause_seconds, global_val)
+ 
+-    def test_save_global_does_not_overwrite_when_test_override_flag_set(self):
++    def test_save_global_never_writes_hidden_actuator_values(self):
+         import json
+-        from env_cycle_generator import default_configuration, parameters_from_configuration, save_global_settings, save_current_test
++        from dataclasses import replace
++        from env_cycle_generator import default_configuration, parameters_from_configuration, \
++            save_global_settings, save_current_test, flattened_global
+         config = default_configuration()
+         with tempfile.TemporaryDirectory() as directory:
+             path = Path(directory) / 'cfg.json'
+             path.write_text(json.dumps(config), encoding='utf-8')
+             p = parameters_from_configuration(config, 'ENV_026')
+-            from dataclasses import replace
+-            p_over = replace(p, load_hold_seconds=42.0)
+-            save_current_test(path, p_over, override_keys={'load_hold_seconds'})
+-            # Now save global with different value but override flag logic in GUI prevents it
+-            # Simulate: save_global_settings should only write visible globals
+-            p_global = replace(p_over, load_hold_seconds=7.5)
+-            saved = save_global_settings(path, p_global)
+-            # Global should be updated
+-            self.assertEqual(saved['global']['actuator']['visible']['load_hold_seconds'], 7.5)
+-            # Test override should still win for ENV_026
++            save_current_test(path, replace(p, load_hold_seconds=42.0))
++            default_hold = flattened_global(config)['load_hold_seconds']
++            saved = save_global_settings(path, replace(p, load_hold_seconds=7.5, sample_seconds=123))
++            self.assertEqual(saved['global']['csv']['visible']['sample_seconds'], 123)   # visible globals still saved
++            self.assertEqual(flattened_global(saved)['load_hold_seconds'], default_hold)  # hidden default untouched
+             self.assertEqual(parameters_from_configuration(saved, 'ENV_026').load_hold_seconds, 42.0)
+ 
+     def test_gui_source_has_no_german_ui_texts(self):

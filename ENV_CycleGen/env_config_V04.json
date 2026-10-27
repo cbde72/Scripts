@@ -9,15 +9,14 @@
       }
     },
     "actuator": {
-      "visible": {
+      "visible": {},
+      "unvisible": {
         "load_start_delay_seconds": 1.0,
         "load_open_seconds": 1.0,
-        "load_hold_seconds": 16.5,
         "load_pause_seconds": 16.5,
-        "load_close_seconds": 1.0,
-        "load_max_percent": 100.0
-      },
-      "unvisible": {}
+        "load_close_seconds": 20.0,
+        "load_additional_pause_seconds": 0.0
+      }
     },
     "chart": {
       "visible": {
@@ -115,6 +114,13 @@
         "humidity_rh": 60,
         "active_mode": "3.2",
         "standby_mode": "3.1"
+      },
+      "overrides": {
+        "load_start_delay_seconds": 0.0,
+        "load_open_seconds": 1.0,
+        "load_pause_seconds": 10.0,
+        "load_close_seconds": 20.0,
+        "load_additional_pause_seconds": 111.0
       }
     },
     "ENV_014": {
@@ -225,5 +231,5 @@
       }
     }
   },
-  "actuator_migrated_to_visible": true
+  "actuator_per_test": true
 }
